@@ -546,3 +546,52 @@ keys:
 		t.Error("a caller with no key entry is expected to pass here: the proxy refuses strangers every account (credentialVerdict)")
 	}
 }
+
+// P78 B2: the sam3 extension. `pool:` on a `provides` entry is not rejected,
+// survives Effective, and names gpu1 for the process layer; ramUsage's gpu1 key
+// names the same pool, so the declaration is consistent either way. The
+// served name is "<extension>-<key>" and its type makes it a mask emitter.
+func TestSam3ExtensionPlacesOnGpu1AndEmitsMask(t *testing.T) {
+	c, err := loadYAML(t, `
+servers:
+  box1:
+    pools: { gpu0: 24GB, gpu1: 10GB, system: 125GB }
+    devices: { gpu0: "GPU-a", gpu1: "GPU-b" }
+extensions:
+  sam3:
+    cmd: "exec sam3shim --port 5821"
+    server: box1
+    ramUsage: { gpu1: 4600MiB, system: 4GB }
+    proxy: 5821
+    sticky: { ttl: 2m, idleUnload: 10m }
+    provides:
+      segment:
+        type: segment
+        pool: gpu1
+        maxConcurrent: 1
+        modalities: { image: {}, text: {} }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, ok := c.Effective("sam3-segment")
+	if !ok {
+		t.Fatal("sam3-segment not served")
+	}
+	if m.Server != "box1" || m.Pool != "gpu1" {
+		t.Errorf("effective placement = server %q pool %q, want box1 gpu1", m.Server, m.Pool)
+	}
+	if got := c.DevicePoolsNamedBy(m.Server, m.Pool, m.RAMUsage); len(got) != 1 || got[0] != "gpu1" {
+		t.Errorf("device pools = %v, want [gpu1]", got)
+	}
+	// Without `pool:` the ramUsage key still names it.
+	if got := c.DevicePoolsNamedBy("box1", "", m.RAMUsage); len(got) != 1 || got[0] != "gpu1" {
+		t.Errorf("device pools from ramUsage = %v, want [gpu1]", got)
+	}
+	if got := ModelCapability(m); got != "image.segment" {
+		t.Errorf("capability = %q, want image.segment", got)
+	}
+	if io := ModelIO("sam3-segment", m, false); !io.Emits(ModalityMask) || !io.Accepts(ModalityImage) {
+		t.Errorf("IO = %+v, want image in, mask out", io)
+	}
+}

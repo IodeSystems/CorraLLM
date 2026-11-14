@@ -101,6 +101,8 @@ export function capLabel(c?: string): string {
       return 'realtime'
     case 'audio.tts':
       return 'tts'
+    case 'image.segment':
+      return 'segment'
     case 'embeddings':
       return 'embed'
     default:

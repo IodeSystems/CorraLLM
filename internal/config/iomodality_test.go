@@ -29,6 +29,9 @@ func TestTypeIOAndDerivedCapability(t *testing.T) {
 		{"stable-diffusion", []string{"text"}, []string{"image"}, "image.generate"},
 		{"sdxl", []string{"text"}, []string{"image"}, "image.generate"},
 		{"txt2img", []string{"text"}, []string{"image"}, "image.generate"},
+		// Segmentation takes a picture (+ optional text) and returns masks, not
+		// a picture: image is on the In side only.
+		{"segment", []string{"image", "text"}, []string{"mask"}, "image.segment"},
 		// Delivery, not IO: realtime is audio-in/text-out exactly like batch STT.
 		// The label splits them because the ROUTE differs (WebSocket vs POST),
 		// and that axis is not a modality.
@@ -103,5 +106,24 @@ func TestModelIOInputsBeatTheType(t *testing.T) {
 	}
 	if !reflect.DeepEqual(io.Out, []string{"text"}) {
 		t.Errorf("outputs = %v, want [text] from the cost type", io.Out)
+	}
+}
+
+// TestSegmentEmitsMaskNotImage: a segmenter must fail an image-generation gate
+// and pass a mask gate; a diffusion model and a vision chat model must fail the
+// mask gate.
+func TestSegmentEmitsMaskNotImage(t *testing.T) {
+	seg := TypeIO("segment")
+	if !seg.Emits(ModalityMask) || seg.Emits(ModalityImage) {
+		t.Errorf("segment IO = %+v, want Emits(mask) and not Emits(image)", seg)
+	}
+	for _, typ := range []string{"chat", "diffusion"} {
+		if TypeIO(typ).Emits(ModalityMask) {
+			t.Errorf("%s emits mask", typ)
+		}
+	}
+	vision := Model{Type: "chat", Modalities: map[string]ModalitySpec{"text": {}, "image": {}}}
+	if ModelIO("v", vision, false).Emits(ModalityMask) {
+		t.Error("a vision chat model emits mask")
 	}
 }

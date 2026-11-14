@@ -44,6 +44,11 @@ const (
 	ModalityAudio   = "audio"
 	ModalityVector  = "vector"
 	ModalityRanking = "ranking"
+	// ModalityMask is what a segmentation model returns: per-object masks
+	// (COCO RLE) with boxes and scores, not a picture. Kept apart from image so
+	// that /v1/images/segmentations refuses a diffusion model for the same
+	// reason /v1/images/generations refuses a vision chat model.
+	ModalityMask = "mask"
 )
 
 // Accepts reports whether this IO takes the modality as input.
@@ -87,6 +92,8 @@ func TypeIO(typ string) IO {
 	switch {
 	case isImageGenType(t):
 		return IO{In: []string{ModalityText}, Out: []string{ModalityImage}}
+	case strings.Contains(t, "segment"):
+		return IO{In: []string{ModalityImage, ModalityText}, Out: []string{ModalityMask}}
 	case strings.Contains(t, "tts") || strings.Contains(t, "speech"):
 		return IO{In: []string{ModalityText}, Out: []string{ModalityAudio}}
 	case strings.Contains(t, "stt") || strings.Contains(t, "asr") ||
@@ -109,6 +116,8 @@ func (io IO) capability() string {
 	switch {
 	case io.Emits(ModalityImage):
 		return "image.generate"
+	case io.Emits(ModalityMask):
+		return "image.segment"
 	case io.Emits(ModalityAudio):
 		return "audio.tts"
 	case io.Emits(ModalityVector):
