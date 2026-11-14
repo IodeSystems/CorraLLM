@@ -17,9 +17,11 @@ class ImageError(ValueError):
         self.code = code
 
 
+def is_url(value: str) -> bool:
+    return re.match(r"^[a-z][a-z0-9+.-]*://", value, re.I) is not None
+
+
 def decode_base64(value: str) -> bytes:
-    if re.match(r"^[a-z][a-z0-9+.-]*://", value, re.I):
-        raise ImageError("image URLs are not fetched; send a data URL or base64")
     value = _DATA_URL.sub("", value, count=1)
     if value.lower().startswith("data:"):
         raise ImageError("image data URL must be base64 encoded image/*")
@@ -29,8 +31,7 @@ def decode_base64(value: str) -> bytes:
         raise ImageError("image is not valid base64") from None
 
 
-def load_upright(data: bytes) -> Image.Image:
-    """Decode JPEG/PNG/WebP, apply EXIF orientation, return RGB. Size checked before pixel load."""
+def _open(data: bytes):
     try:
         img = Image.open(io.BytesIO(data))
     except Exception:
@@ -40,6 +41,24 @@ def load_upright(data: bytes) -> Image.Image:
     w, h = img.size  # header only; rotation swaps sides but not the cap
     if w > MAX_SIDE or h > MAX_SIDE:
         raise ImageError(f"image {w}x{h} exceeds {MAX_SIDE}x{MAX_SIDE}", "image_too_large")
+    return img
+
+
+def upright_size(data: bytes) -> tuple[int, int]:
+    """(width, height) after EXIF orientation, from the header only (no pixel decode)."""
+    img = _open(data)
+    w, h = img.size
+    try:
+        if img.getexif().get(0x0112, 1) in (5, 6, 7, 8):
+            w, h = h, w
+    except Exception:
+        raise ImageError("image is corrupt") from None
+    return w, h
+
+
+def load_upright(data: bytes) -> Image.Image:
+    """Decode JPEG/PNG/WebP, apply EXIF orientation, return RGB. Size checked before pixel load."""
+    img = _open(data)
     try:
         img.load()
         img = ImageOps.exif_transpose(img)

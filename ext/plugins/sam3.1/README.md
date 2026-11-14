@@ -1,13 +1,35 @@
 # sam3shim
 
 HTTP shim in front of SAM 3.1 for corrallm (spec: corrallm `plan/p78-sam-colmap.md`, section 4.1).
-Serves `POST /v1/images/segmentations` (same body and response as the spec, so corrallm proxies it
-unchanged) and `GET /health`. One inference at a time (lock); body cap 32 MiB.
+Serves `POST /v1/images/segmentations` and `GET /health`. The route follows OpenAI's `/v1/images/edits`:
+JSON or multipart/form-data, `/v1/images/*` envelope. One inference at a time (lock); body cap 32 MiB.
 
-Coordinates: pixels of the EXIF-upright image, top-left origin, continuous. Box `[x0,y0,x1,y1]`
-edges (x1, y1 exclusive). Point label 1 include / 0 exclude. Out of range -> 400 with `param`
-(never clamped). Masks: COCO RLE, `size` = `[height, width]`, pycocotools-compatible counts string.
-Point `label` is required; box-exemplar `label` defaults to 1. Errors use the OpenAI envelope.
+Request fields: `model`; `image` (one) or `image[]` (up to 16): JSON data URL, base64 or http(s) URL, multipart
+file part; `prompt` (concept text; optional if points or boxes are given); `boxes` `[[x0,y0,x1,y1]]` (exemplars of
+the concept, every instance is returned); `points` `[{x,y,label:1|0}]` (alone: one object; with `prompt` or
+`boxes`: 400); `n` (max segments per image, default 100); `threshold` (0..1, default 0.5);
+`response_format` `rle` (default) | `png`. `polygon` is 400 `unsupported_value` (no contour code, no cv2).
+
+    curl -s :5821/v1/images/segmentations -F model=sam3-segment -F 'image[]=@a.png' -F 'image[]=@b.png' \
+         -F prompt='red circle' -F 'boxes=[[[145,35,255,145]],[[35,55,125,145]]]' -F response_format=png
+    {"created":1763140000,"data":[{"index":0,"width":320,"height":240,"segments":[{"score":0.957,
+      "box":[144,34,256,147],"area":4319,"mask":{"format":"png","b64_json":"..."}}]}, {"index":1,...}],
+     "usage":{"images":2,"masks":2}}
+    rle mask: {"format":"rle","size":[H,W],"counts":"..."}  (COCO RLE, pycocotools-compatible)
+
+`points` and `boxes` apply to every image when flat (each checked against that image's own size). Per image:
+one list per image, exactly as many as images, `[]` for none: `boxes: [[[..]],[[..],[..]]]`,
+`points: [[{..}],[]]`. In multipart they are form fields holding that JSON; `n` and `threshold` are text numbers.
+Limits per image: 64 points, 16 boxes, prompt 256 chars; decoded image at most 4096x4096.
+
+Coordinates: pixels of the EXIF-upright image, top-left origin, continuous. Box edges (x1, y1) exclusive.
+Out of range -> 400 with `param` (never clamped): `points[0].x` flat, `boxes[1][0][2]` per image; the message
+names the image when there are several. Every image is decoded for size and every prompt validated before the
+first inference. Errors use the OpenAI envelope `{error:{message,type:"invalid_request_error",param,code}}`.
+
+URL images are fetched by the shim: http/https only, 32 MiB, 20 s, redirects re-checked, and only globally
+routable addresses (loopback, link-local and private ranges give 400 `image_url_forbidden`; `--allow-private-urls`
+lifts that). The check resolves the name before the fetch, so DNS rebinding is not covered.
 
 ## Setup (no sudo; everything in ./.venv)
 
@@ -64,8 +86,9 @@ Behaviour to know:
   full-size mask each); a request `threshold` below 0.05 cannot return them.
 - fp32 replaces sam3's `perflib.fused.addmm_act` (hardcodes bf16 for the ViT MLP) and disables TF32.
 - `use_fa3=False` (FlashAttention 3 is a Hopper extra).
-- HTTP end-to-end with the real backend on the 3080 (bf16): cold start 25 s to /health (page cache warm); text, point, box
-  and box-exemplar prompts return spec-shaped results in 280-335 ms; bad input gives 400 with `param`.
+- HTTP end-to-end with the real backend on the 3080 (bf16), 11-14, new API: multipart and JSON, 2 images, text
+  + per-image box exemplar: 0.66 s for both, one segment per image (scores 0.95-0.96; mask quality on these synthetic discs
+  not checked); bad box gives 400 `boxes[0][2]`. Cold start 25-71 s to /health.
 - Do not run with a cwd that contains a `sam3/` directory: it shadows the package (`pkg_resources` TypeError at load).
 - Not done: concurrent requests, long-run VRAM growth, `torch.compile`.
 
@@ -93,5 +116,5 @@ extensions:
 
 ## Layout
 
-`server.py` HTTP · `service.py` request -> response · `prompts.py` validation and pixel -> SAM
-conversion · `rle.py` COCO RLE · `orient.py` decode + EXIF · `backends.py` stub and SAM 3.1.
+`server.py` HTTP · `multipart.py` form -> dict · `service.py` request -> response · `fetch.py` URL images ·
+`prompts.py` validation and pixel -> SAM conversion · `rle.py` COCO RLE · `orient.py` decode + EXIF · `backends.py` stub and SAM 3.1.

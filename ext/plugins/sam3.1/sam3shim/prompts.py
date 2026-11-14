@@ -2,14 +2,20 @@
 
 Frame: pixels of the EXIF-upright image, origin top-left, continuous coordinates
 (pixel (i, j) covers [i, i+1) x [j, j+1)). Out-of-range values are refused, never clamped.
+
+Request fields (OpenAI /v1/images/edits style; JSON or multipart/form-data):
+  model, image | image[] (1..16), prompt, points, boxes, n, response_format, threshold.
+points / boxes apply to every image, or per image (see _per_image).
 """
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-MAX_PROMPTS = 16
-MAX_POINTS = 64
-MAX_EXEMPLARS = 16
+MAX_IMAGES = 16
+MAX_POINTS = 64   # per image
+MAX_BOXES = 16    # per image
 MAX_TEXT = 256
+MAX_N = 1000
+FORMATS = ("rle", "png", "polygon")
 
 
 class ValidationError(ValueError):
@@ -22,7 +28,7 @@ class ValidationError(ValueError):
 @dataclass
 class Exemplar:
     box: tuple[float, float, float, float]  # xyxy pixels
-    label: int
+    label: int = 1
 
 
 @dataclass
@@ -36,7 +42,6 @@ class Point:
 class ConceptPrompt:
     text: str | None
     boxes: list[Exemplar]
-    type: str = "concept"
 
 
 @dataclass
@@ -44,18 +49,21 @@ class VisualPrompt:
     points: list[Point]
     box: tuple[float, float, float, float] | None
     multimask: bool
-    type: str = "visual"
 
 
 @dataclass
 class Request:
     model: str
-    image: str
-    prompts: list = field(default_factory=list)  # filled by validate_prompts
-    raw_prompts: list = field(default_factory=list)
+    images: list            # each str (data URL, base64, http(s) URL) or bytes (multipart file)
+    image_list: bool        # image given as a list (errors say image[i], not image)
+    text: str | None
+    points: list            # raw, shape-checked: list of per-image raw lists, length == len(images)
+    boxes: list
+    points_shared: bool     # one flat list given for all images (affects `param` paths only)
+    boxes_shared: bool
+    n: int = 100
+    response_format: str = "rle"
     threshold: float = 0.5
-    max_masks: int = 100
-    output: str = "rle"
 
 
 def _num(v, param: str) -> float:
@@ -68,6 +76,129 @@ def _label(v, param: str) -> int:
     if isinstance(v, bool) or not isinstance(v, int) or v not in (0, 1):
         raise ValidationError("label must be the integer 0 or 1", param)
     return v
+
+
+def _only(d: dict, allowed: set, param: str):
+    extra = sorted(set(d) - allowed)
+    if extra:
+        raise ValidationError(f"unknown or not allowed field '{extra[0]}'", f"{param}.{extra[0]}")
+
+
+def _per_image(v, count: int, param: str, kind: str):
+    """-> (list of per-image raw lists, shared). `kind` is 'points' (items are objects) or
+    'boxes' (items are [x0,y0,x1,y1]).
+
+    Flat form: a list of items, applied to EVERY image.
+      points [{x,y,label}, ...]      boxes [[x0,y0,x1,y1], ...]
+    Per-image form: a list of per-image lists, exactly one per image (use [] for none).
+      points [[{...}], [{...}, {...}]]   boxes [[[...]], [[...], [...]]]
+    The two are told apart by the element type, so `[]` alone is 'none for all'. A list mixing
+    the two forms is refused."""
+    if v is None:
+        return [[] for _ in range(count)], True
+    if not isinstance(v, list):
+        raise ValidationError(f"{param} must be a list", param)
+
+    def is_item(e):
+        if kind == "points":
+            return isinstance(e, dict)
+        return isinstance(e, list) and len(e) > 0 and not any(isinstance(c, list) for c in e)
+
+    def is_group(e):
+        if not isinstance(e, list):
+            return False
+        return all(isinstance(c, dict) for c in e) if kind == "points" else all(isinstance(c, list) for c in e)
+
+    if all(is_item(e) for e in v):  # includes []
+        return [list(v) for _ in range(count)], True
+    if all(is_group(e) for e in v):
+        if len(v) != count:
+            raise ValidationError(
+                f"per-image {param} needs exactly one list per image ({count}), got {len(v)}", param)
+        return [list(g) for g in v], False
+    raise ValidationError(
+        f"{param} must be one flat list for all images or one list per image, not a mix", param)
+
+
+def _text_value(v, param: str, what: str):
+    if not isinstance(v, str) or not v.strip() or len(v) > MAX_TEXT:
+        raise ValidationError(f"{what} must be a non-empty string up to {MAX_TEXT} chars", param)
+    return v.strip()
+
+
+def parse_request(body) -> Request:
+    """Checks that do not need the image sizes."""
+    if not isinstance(body, dict):
+        raise ValidationError("body must be a JSON object")
+    model = body.get("model")
+    if not isinstance(model, str) or not model:
+        raise ValidationError("model is required", "model")
+
+    if "image" in body and "image[]" in body:
+        raise ValidationError("give image or image[], not both", "image[]")
+    key = "image[]" if "image[]" in body else "image"
+    raw = body.get(key)
+    image_list = isinstance(raw, list)
+    images = raw if image_list else [raw]
+    if raw is None or raw == "" or raw == b"" or not images:
+        raise ValidationError("image is required", key)
+    if len(images) > MAX_IMAGES:
+        raise ValidationError(f"at most {MAX_IMAGES} images per request", key)
+    for i, im in enumerate(images):
+        if not isinstance(im, (str, bytes)) or not im:
+            raise ValidationError("image must be a data URL, base64, http(s) URL or file",
+                                  f"{key}[{i}]" if image_list else key)
+    count = len(images)
+
+    text = body.get("prompt")
+    if text is not None:
+        text = _text_value(text, "prompt", "prompt")
+    points, p_shared = _per_image(body.get("points"), count, "points", "points")
+    boxes, b_shared = _per_image(body.get("boxes"), count, "boxes", "boxes")
+    for i, g in enumerate(points):
+        if len(g) > MAX_POINTS:
+            raise ValidationError(f"at most {MAX_POINTS} points per image", "points" if p_shared else f"points[{i}]")
+    for i, g in enumerate(boxes):
+        if len(g) > MAX_BOXES:
+            raise ValidationError(f"at most {MAX_BOXES} boxes per image", "boxes" if b_shared else f"boxes[{i}]")
+    if text is None and not any(points) and not any(boxes):
+        raise ValidationError("prompt is required unless points or boxes are given", "prompt")
+
+    thr = _num(body.get("threshold", 0.5), "threshold")
+    if not 0 <= thr <= 1:
+        raise ValidationError("threshold must be 0..1", "threshold")
+    n = body.get("n", 100)
+    if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= MAX_N:
+        raise ValidationError(f"n must be an integer 1..{MAX_N}", "n")
+    fmt = body.get("response_format", "rle")
+    if fmt not in FORMATS:
+        raise ValidationError("response_format must be 'rle', 'png' or 'polygon'", "response_format")
+    if fmt == "polygon":
+        raise ValidationError("response_format 'polygon' is not implemented; use 'rle' or 'png'",
+                              "response_format", "unsupported_value")
+    return Request(model=model, images=images, image_list=image_list, text=text, points=points,
+                   boxes=boxes, points_shared=p_shared, boxes_shared=b_shared, n=n,
+                   response_format=fmt, threshold=thr)
+
+
+def _path(base: str, shared: bool, i: int, j: int, sub: str = "") -> str:
+    """param path of item j: `points[j].x` when flat, `points[i][j].x` when per image."""
+    return f"{base}[{j}]{sub}" if shared else f"{base}[{i}][{j}]{sub}"
+
+
+def _point(q, w: int, h: int, param: str) -> Point:
+    if not isinstance(q, dict):
+        raise ValidationError("point must be {x, y, label}", param)
+    _only(q, {"x", "y", "label"}, param)
+    x = _num(q.get("x"), f"{param}.x")
+    y = _num(q.get("y"), f"{param}.y")
+    if not 0 <= x <= w:
+        raise ValidationError(f"out of range 0..{w} (pixels)", f"{param}.x")
+    if not 0 <= y <= h:
+        raise ValidationError(f"out of range 0..{h} (pixels)", f"{param}.y")
+    if "label" not in q:
+        raise ValidationError("label is required (1 include, 0 exclude)", f"{param}.label")
+    return Point(x, y, _label(q["label"], f"{param}.label"))
 
 
 def _box(v, w: int, h: int, param: str) -> tuple[float, float, float, float]:
@@ -84,100 +215,28 @@ def _box(v, w: int, h: int, param: str) -> tuple[float, float, float, float]:
     return (x0, y0, x1, y1)
 
 
-def _only(d: dict, allowed: set, param: str):
-    extra = sorted(set(d) - allowed)
-    if extra:
-        raise ValidationError(f"unknown or not allowed field '{extra[0]}'", f"{param}.{extra[0]}")
+def prompt_for_image(req: Request, i: int, w: int, h: int):
+    """Validate image i's points/boxes against its own upright size -> ConceptPrompt | VisualPrompt.
 
-
-def parse_request(body) -> Request:
-    """Top-level checks that do not need the image size."""
-    if not isinstance(body, dict):
-        raise ValidationError("body must be a JSON object")
-    model = body.get("model")
-    if not isinstance(model, str) or not model:
-        raise ValidationError("model is required", "model")
-    image = body.get("image")
-    if not isinstance(image, str) or not image:
-        raise ValidationError("image is required", "image")
-    prompts = body.get("prompts")
-    if not isinstance(prompts, list) or not 1 <= len(prompts) <= MAX_PROMPTS:
-        raise ValidationError(f"prompts must be a list of 1..{MAX_PROMPTS}", "prompts")
-    thr = body.get("threshold", 0.5)
-    thr = _num(thr, "threshold")
-    if not 0 <= thr <= 1:
-        raise ValidationError("threshold must be 0..1", "threshold")
-    mm = body.get("max_masks", 100)
-    if isinstance(mm, bool) or not isinstance(mm, int) or not 1 <= mm <= 1000:
-        raise ValidationError("max_masks must be an integer 1..1000", "max_masks")
-    out = body.get("output", "rle")
-    if out not in ("rle", "boxes"):
-        raise ValidationError("output must be 'rle' or 'boxes'", "output")
-    return Request(model=model, image=image, raw_prompts=prompts, threshold=thr, max_masks=mm, output=out)
-
-
-def validate_prompts(raw: list, w: int, h: int) -> list:
-    return [_prompt(p, i, w, h) for i, p in enumerate(raw)]
-
-
-def _prompt(p, i: int, w: int, h: int):
-    base = f"prompts[{i}]"
-    if not isinstance(p, dict):
-        raise ValidationError("prompt must be an object", base)
-    t = p.get("type")
-    if t == "concept":
-        if "points" in p:
-            raise ValidationError("concept prompts take text and boxes, not points", f"{base}.points")
-        _only(p, {"type", "text", "boxes"}, base)
-        text = p.get("text")
-        if text is not None:
-            if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
-                raise ValidationError(f"text must be a non-empty string up to {MAX_TEXT} chars", f"{base}.text")
-            text = text.strip()
-        raw_boxes = p.get("boxes", [])
-        if not isinstance(raw_boxes, list) or len(raw_boxes) > MAX_EXEMPLARS:
-            raise ValidationError(f"boxes must be a list of up to {MAX_EXEMPLARS}", f"{base}.boxes")
-        boxes = []
-        for j, b in enumerate(raw_boxes):
-            bp = f"{base}.boxes[{j}]"
-            if not isinstance(b, dict):
-                raise ValidationError("exemplar must be {box, label}", bp)
-            _only(b, {"box", "label"}, bp)
-            boxes.append(Exemplar(_box(b.get("box"), w, h, f"{bp}.box"), _label(b.get("label", 1), f"{bp}.label")))
-        if text is None and not boxes:
-            raise ValidationError("concept prompt needs text and/or boxes", base)
-        return ConceptPrompt(text, boxes)
-    if t == "visual":
-        for k in ("text", "boxes"):
-            if k in p:
-                raise ValidationError(f"visual prompts take points and one box, not {k}", f"{base}.{k}")
-        _only(p, {"type", "points", "box", "multimask"}, base)
-        raw_pts = p.get("points", [])
-        if not isinstance(raw_pts, list) or len(raw_pts) > MAX_POINTS:
-            raise ValidationError(f"points must be a list of up to {MAX_POINTS}", f"{base}.points")
-        pts = []
-        for j, q in enumerate(raw_pts):
-            pp = f"{base}.points[{j}]"
-            if not isinstance(q, dict):
-                raise ValidationError("point must be {x, y, label}", pp)
-            _only(q, {"x", "y", "label"}, pp)
-            x = _num(q.get("x"), f"{pp}.x")
-            y = _num(q.get("y"), f"{pp}.y")
-            if not 0 <= x <= w:
-                raise ValidationError(f"out of range 0..{w} (pixels)", f"{pp}.x")
-            if not 0 <= y <= h:
-                raise ValidationError(f"out of range 0..{h} (pixels)", f"{pp}.y")
-            if "label" not in q:
-                raise ValidationError("label is required (1 include, 0 exclude)", f"{pp}.label")
-            pts.append(Point(x, y, _label(q["label"], f"{pp}.label")))
-        box = _box(p["box"], w, h, f"{base}.box") if p.get("box") is not None else None
-        if not pts and box is None:
-            raise ValidationError("visual prompt needs at least one point or a box", base)
-        mm = p.get("multimask", False)
-        if not isinstance(mm, bool):
-            raise ValidationError("multimask must be a boolean", f"{base}.multimask")
-        return VisualPrompt(pts, box, mm)
-    raise ValidationError("type must be 'concept' or 'visual'", f"{base}.type")
+    prompt and/or boxes -> concept (every instance; boxes are positive exemplars).
+    points alone        -> visual (one object).
+    points with prompt or boxes -> 400: the model's concept path takes no points."""
+    where = f" (image {i})" if len(req.images) > 1 else ""
+    try:
+        pts = [_point(q, w, h, _path("points", req.points_shared, i, j)) for j, q in enumerate(req.points[i])]
+        boxes = [Exemplar(_box(b, w, h, _path("boxes", req.boxes_shared, i, j))) for j, b in enumerate(req.boxes[i])]
+    except ValidationError as e:
+        if where:
+            e.args = (e.args[0] + where,)
+        raise
+    if pts and (req.text or boxes):
+        raise ValidationError("points cannot be combined with prompt or boxes; send points alone "
+                              "(one object) or prompt/boxes (every instance)" + where, "points")
+    if pts:
+        return VisualPrompt(pts, None, False)
+    if not req.text and not boxes:
+        raise ValidationError("prompt is required unless points or boxes are given" + where, "prompt")
+    return ConceptPrompt(req.text, boxes)
 
 
 # ---- pixel -> SAM conversions -------------------------------------------------

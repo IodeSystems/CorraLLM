@@ -1,8 +1,9 @@
-"""HTTP front: POST /v1/images/segmentations, GET /health. One inference at a time."""
+"""HTTP front: POST /v1/images/segmentations (JSON or multipart/form-data), GET /health. One inference at a time."""
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .multipart import parse_multipart
 from .orient import ImageError
 from .prompts import ValidationError
 from .service import segment
@@ -11,7 +12,7 @@ MAX_BODY = 32 * 1024 * 1024
 ROUTE = "/v1/images/segmentations"
 
 
-def make_server(backend, host: str, port: int) -> ThreadingHTTPServer:
+def make_server(backend, host: str, port: int, fetch=None) -> ThreadingHTTPServer:
     lock = threading.Lock()  # serialises inference; /health stays responsive
 
     class H(BaseHTTPRequestHandler):
@@ -53,13 +54,19 @@ def make_server(backend, host: str, port: int) -> ThreadingHTTPServer:
                 self.close_connection = True
                 return self._err(413, "request body over 32 MiB", code="request_too_large")
             raw = self.rfile.read(n)
+            ctype = self.headers.get("Content-Type", "")
             try:
-                body = json.loads(raw)
+                if ctype.lower().startswith("multipart/form-data"):
+                    body = parse_multipart(ctype, raw)
+                else:
+                    body = json.loads(raw)
+            except ValidationError as e:
+                return self._err(400, str(e), param=e.param, code=e.code)
             except ValueError:
                 return self._err(400, "body is not valid JSON")
             try:
                 with lock:
-                    out = segment(body, backend)
+                    out = segment(body, backend, fetch)
             except ValidationError as e:
                 return self._err(400, str(e), param=e.param, code=e.code)
             except ImageError as e:
