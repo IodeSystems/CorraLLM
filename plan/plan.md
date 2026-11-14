@@ -378,7 +378,7 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◐ P77 — llama.cpp v1.0.0 + our patch stack — 2026-11-13
+### ❓ P77 — llama.cpp v1.0.0 + our patch stack — 2026-11-13
 
 Owner 11-13: "Let's do llama 1.0 and our patch stack on it." Serving build 12300 (`ccd360f06`,
 0.9.0-dev); upstream tagged `v1.0.0` = `b1b770d90d94cad9e9ea5b993bdbc383a522fb28` (59 commits on ccd360f06).
@@ -397,7 +397,15 @@ rebuild has nothing to do. Patches live outside the repo, in ~/.corrallm/tools/l
   (server-common.cpp handle_media; data: URLs unaffected); CORS/Host checks apply only when
   --cors-origins is not `*` (default `*`); tools/MCP on non-loopback need an API key (not used).
 - ✅ 11-13 CUDA test on the 3080 (GPU UUID pin, ports 5977-78, production untouched, PIDs 585004/2129566 same before/after, peak 2.5 GiB of 9.0 free): ldd = cudart/cublas 13 only; sm_86 loads; nomic embed cosine 1.000000 (20 texts) vs ccd360f0, 20-text batch 67 ms both; Qwen3.5-2B Q8 chat (parallel 2, kv-unified, --cache-ram 1024 weighted, ctx-ckpt 8, pool RESERVE=1) 3 runs x 7 turns, stream + non-stream: id_slot set, 12/21 prompt-cache hits, cache_* + host_pool_* metrics present, cold prefill 10,700 vs 10,774 tok/s, decode 181.4 vs 181.9 tok/s, warm resume 0.772 vs 0.785 s; draft-simple spec (0.8B draft, probabilistic) runs, accepted ~50 %, decode 63-76 vs 63-80 tok/s; 150-request fragmentation churn at --cache-ram 700: 0 errors, 66 budget evictions, compaction counters stayed 0 (never triggered; 'failed to restore kv cache' lines = test kv too small, production build logs them too). No CUDA errors/crashes. NOT tested: MTP (no small MTP GGUF), compaction under CUDA, Swift-size load, dmesg (restricted).
-**next:** owner approves the gated swap: copy patches unchanged (already identical), set the tool ref to
+- ❓ 11-13 18:18 swap attempt BLOCKED at the trigger: ref set to b1b770d9 + `config load --force` + reload OK
+  (backends kept), but no way to start the gated job without the owner: POST /api/v1/tools/build needs an
+  admin SSO session (admin token disabled; auth.Middleware has no loopback path); the dashboard in Chrome
+  is signed out (agent may not sign in via SSO); the only other gated path is the watcher at rebuildAt
+  06:00. Config REVERTED to the pre-P77 export (diff identical), so the 06:00 slot will not swap unattended.
+  Files: ~/.corrallm/config-backup-pre-p77-20261113.yaml (= current) and session scratchpad p77-config.yaml.
+**next (owner):** sign in to the dashboard; then `corrallm config load --force <p77 yaml> && systemctl
+--user reload corrallm`, Tools page → Build llama.cpp/box1; or say "arm 06:00" to leave the ref set.
+Previous next: owner approves the gated swap: copy patches unchanged (already identical), set the tool ref to
 b1b770d9… (`corrallm config export` → edit → `config load --force` → `systemctl --user reload corrallm`),
 then Build llama.cpp/box1 from the dashboard Tools page (daemon job = start check + P52 bench, pauses
 Swift ~1 min, rolls back on >10% slower) or wait for the 06:00 slot. NOT `corrallm tools build` (no gate).
