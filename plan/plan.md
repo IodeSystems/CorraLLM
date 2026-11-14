@@ -493,6 +493,16 @@ ourselves if it differs from 60e813d4.
 
 ### ◐ P75 — Prompt-cache miss attribution, patch 0005 (LRU + hits + metrics), slot affinity — 2026-11-10
 
+**11-14 slot-switch finding (v1.0+0002-0006, code refs ~/.corrallm/tools/llama.cpp-p77/src/tools/server/):** the same-host
+cache covers ~94% of slot changes (1,888 of 2,010 switches hit). The 121 misses (2.44M tok / 12 h): 80 had the previous slot
+BUSY at arrival (2.03M tok; 66 with both slots busy → deferred, took whichever slot freed first); 41 had it IDLE (0.41M) —
+the idle-slot save (`cache_idle_slots`, server-context.cpp:3135-3149) runs AFTER slot choice (:3097), and the 0.9
+similarity pick (:1877) fails when the new prompt grew >10%, so LRU picks the other slot and its cache lookup runs before
+the save. A similarity pick with f_keep ≥ 0.5 truncates without saving (:1894). No cross-request seq_cp (hybrid seq_cp
+exists, llama-memory-hybrid.cpp:153). Fix options (owner to pick): (1) save idle slots before choosing a slot (~20-line
+patch, fixes the idle cases); (2) choose the idle slot with the longest prefix ≥ 50% instead of the 0.9 threshold;
+(3) slot-aware dequeue in corrallm (fixes the both-busy cases, most of the lost tokens); (4) cross-slot seq_cp (most work).
+
 Owner approved all three steps 11-10. Swift live: `--parallel 2 --kv-unified -c 172032
 --cache-ram 18432 --ctx-checkpoints 8 --slot-prompt-similarity 0.9`, build a4d4f2fd4 + 0002-0004.
 **--cache-ram 40960 → 18432 (owner, 11-10 18:13 PST):** the pinned 40 GiB reservation drew the
