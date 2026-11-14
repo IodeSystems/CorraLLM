@@ -7,7 +7,7 @@ dependencies = ["numpy", "pillow"]
 
 [project.optional-dependencies]
 # Real backend only. torch must match the host CUDA (>= 12.6); see README.
-sam3 = ["torch>=2.7"]
+sam3 = ["torch>=2.7"]  # see scripts/venv-sam3.sh for the pinned install
 test = ["pytest", "pycocotools"]
 
 [build-system]
