@@ -3,6 +3,9 @@ package lease_test
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,4 +158,28 @@ func TestHoldYieldAndReregistration(t *testing.T) {
 		t.Fatal("409 on re-registration did not yield")
 	}
 	h.Release()
+}
+
+// The busy text carries the parsed Retry-After, not corrallm's unrounded
+// "retry_after=0s" (the T1b job log printed 0 s while the header said 1).
+func TestBusyErrorPrintsParsedRetryAfter(t *testing.T) {
+	for _, tc := range []struct{ msg, want string }{
+		{"no capacity: retry_after=0s (blocking=[chandra nomic])", "lease busy: no capacity: retry_after=7s (blocking=[chandra nomic])"},
+		{"busy", "lease busy: busy (retry_after=7s)"},
+	} {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Retry-After", "7")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"type":"lease_busy","message":"` + tc.msg + `","retry_after":7}}`))
+		}))
+		_, err := (&lease.Client{Base: s.URL, Token: "t"}).Acquire(context.Background(), req())
+		s.Close()
+		var be *lease.BusyError
+		if !errors.As(err, &be) || be.RetryAfter != 7*time.Second {
+			t.Fatalf("err = %v, want BusyError 7s", err)
+		}
+		if got := err.Error(); got != tc.want || strings.Contains(got, "0s") {
+			t.Errorf("Error() = %q, want %q", got, tc.want)
+		}
+	}
 }

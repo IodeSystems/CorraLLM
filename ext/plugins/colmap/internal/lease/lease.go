@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,7 +60,18 @@ type BusyError struct {
 	Msg        string
 }
 
-func (e *BusyError) Error() string { return "lease busy: " + e.Msg }
+// Error prints the Retry-After the client parsed. corrallm's message embeds
+// its own unrounded value ("retry_after=0s" when no blocker has a known
+// expiry) while the header says 1 s; the job log showed the 0 s.
+func (e *BusyError) Error() string {
+	ra := "retry_after=" + e.RetryAfter.String()
+	if retryAfterText.MatchString(e.Msg) {
+		return "lease busy: " + retryAfterText.ReplaceAllLiteralString(e.Msg, ra)
+	}
+	return "lease busy: " + e.Msg + " (" + ra + ")"
+}
+
+var retryAfterText = regexp.MustCompile(`retry_after=[^\s,)]+`)
 
 // FatalError is an answer retrying cannot fix (400, 401, 403).
 type FatalError struct {
