@@ -331,3 +331,42 @@ func TestActiveUseBlocksEviction(t *testing.T) {
 		t.Fatalf("load B after A idled past the window: %v", err)
 	}
 }
+
+// TestEvictOnlyFromShortPools: a resident that shares only a pool that already
+// fits (system) is not evicted for a load that is short on another (gpu).
+// 11-14: a gpu1 OCR load evicted idle Swift (gpu0 + system) with the guard.
+func TestEvictOnlyFromShortPools(t *testing.T) {
+	cfg := &config.Config{
+		Servers: map[string]config.Server{"box": {Pools: map[string]string{"gpu": "10", "system": "100"}}},
+		Models: map[string]config.Model{
+			"big":   resModel(t, "box", map[string]string{"system": "60"}, listenTCP(t)),
+			"guard": resModel(t, "box", map[string]string{"gpu": "6", "system": "1"}, listenTCP(t)),
+			"ocr":   resModel(t, "box", map[string]string{"gpu": "6", "system": "1"}, listenTCP(t)),
+		},
+	}
+	mgr := NewManager(cfg)
+	mgr.activeUse = 0
+	mgr.healthTimeout = 5 * time.Second
+	defer mgr.Shutdown()
+	ctx := context.Background()
+	for _, n := range []string{"big", "guard"} { // big first: the LRU victim
+		_, done, _, err := mgr.EnsureReady(ctx, n, cfg.Models[n], nil, nil)
+		if err != nil {
+			t.Fatalf("load %s: %v", n, err)
+		}
+		done()
+	}
+	if _, _, _, err := mgr.EnsureReady(ctx, "ocr", cfg.Models["ocr"], nil, nil); err != nil {
+		t.Fatalf("load ocr: %v", err)
+	}
+	mgr.mu.Lock()
+	_, bigResident := mgr.procs["big"]
+	_, guardResident := mgr.procs["guard"]
+	mgr.mu.Unlock()
+	if !bigResident {
+		t.Error("big (system only) was evicted for a gpu shortfall")
+	}
+	if guardResident {
+		t.Error("guard should have been evicted to fit ocr")
+	}
+}

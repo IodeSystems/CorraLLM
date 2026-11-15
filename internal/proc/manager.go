@@ -2066,7 +2066,11 @@ func (m *Manager) makeRoomLocked(server string, usage map[string]int64, incoming
 	}
 	// Candidate victims on this server: idle (refs==0 AND not used within the
 	// activeUse window — between-turn gaps of an agent session don't count as
-	// idle), not pinned, ready, and touching at least one pool we need.
+	// idle), not pinned, ready, and touching at least one pool that is SHORT.
+	// A pool the request needs but that already fits is no reason to evict:
+	// on 11-14 a gpu1 OCR load evicted idle Swift (gpu0 + 68 GB system) only
+	// because both declare `system`, and freeing Swift freed no gpu1 at all.
+	short := m.shortPoolsLocked(server, usage)
 	var victims []*Process
 	for _, q := range m.procs {
 		if q.server != server || q.persistent {
@@ -2075,7 +2079,7 @@ func (m *Manager) makeRoomLocked(server string, usage map[string]int64, incoming
 		q.mu.Lock()
 		idle := q.refs == 0 && q.state == StateReady && now.Sub(q.lastUsed) >= m.activeUse
 		q.mu.Unlock()
-		if idle && touchesAny(q.usage, usage) {
+		if idle && touchesAny(q.usage, short) {
 			victims = append(victims, q)
 		}
 	}
@@ -2307,6 +2311,18 @@ func (m *Manager) fitsExceptLocked(server string, usage map[string]int64, ignore
 		}
 	}
 	return true
+}
+
+// shortPoolsLocked returns the pools of usage that do not fit on server now
+// (values are the wanted amounts). Caller holds m.mu.
+func (m *Manager) shortPoolsLocked(server string, usage map[string]int64) map[string]int64 {
+	short := map[string]int64{}
+	for pool, want := range usage {
+		if !m.fitsLocked(server, map[string]int64{pool: want}, nil) {
+			short[pool] = want
+		}
+	}
+	return short
 }
 
 func (m *Manager) reserveLocked(server string, usage map[string]int64) {
