@@ -378,7 +378,7 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
-### ◐ P80 — Drain-then-restart for local backends; no 502 on a known restart — 2026-11-14
+### ✅ P80 — Drain-then-restart for local backends; no 502 on a known restart — 2026-11-14
 
 aw4 (11-14): Swift restarts by bare SIGTERM (orchestrator, 18:26 11-13 and 13:58 11-14) gave 502 bursts (13:54 = 12, 14:24 = 7
 per 30 min; "connection refused"/EOF while llama-server shut down and loaded). Handoffs (bin/deploy) gave none. aw4 retries 429
@@ -518,6 +518,10 @@ evict idle guard, nomic AND SWIFT (5090) because makeRoomLocked evicted any idle
 freeing it gave no gpu1 memory → aw4's next request waited 83 s (200). Fix 178a885 (evict only residents that free a short
 pool; regression test) + e766b01 (glb content type) cherry-picked to main, tests pass, NOT deployed. Other issues:
 multipart uploads logged as status 100 (Expect: 100-continue); job polling writes one activity row per GET (593 in test).
+✅ 16:2x DEPLOYED v0.3.0-51-g5c194ec (owner "Yes hit it"): P80 + eviction fix live; aw4 told 503 backend_restarting is
+retryable. Swift reloaded during the handoff (pid 3494216 → 3500344), yet 55 Swift requests in the window were all 200, 0 5xx
+(P80 held them). p6 still on (xslot_attach_total 4 after reload). ◐ T1b forced-yield retry (agent; chandra vs a ~5 GiB
+PatchMatch lease; abort if Swift's pid changes).
 **next:** owner go → install, COLMAP_LEASE_TOKEN in ~/.corrallm/credentials, merge block, corrallm RESTART (routes mount at
 boot; evicts resident models incl. Swift) → T1a/T1b against the real lease manager. **open:** Poisson depth default (43 min
 for 30 images); dense VRAM at 3200 px unmeasured.
