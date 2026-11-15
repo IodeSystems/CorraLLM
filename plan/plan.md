@@ -730,6 +730,11 @@ report --since 6h`) vs the 11-14 12 h baseline (121 misses, 2.44M lost tok); dec
 xslot: 48 attaches, 892k tokens reused (~17 % of the 5.27M that would have been lost), skipped host_cache 328.
 Decode p50 79.1 tok/s (77.3 pre), 5xx 18 (503 15). Read: neutral to small gain, no regression. Kept on.
 Note: the 11-14 23:5x readout split at 08:20, not 16:20 (script bug); its "259/12 h" was wrong.
+11-15 TURN ANALYSIS (48 h, 20,561 Swift req, 2,010 conversations; scratchpad q6.py/q7.py): hit by turn: 1 = 31 % (cold,
+14.3k prompt), 2 = 87 %, 3-5 = 89 %, 6-10 = 92 %, 11-50 = 93-94 %, 51-100 = 92 %, 101+ = 88 % (evicted 9 %). Turn 1 = 25-31 %
+of all uncached tokens. Turns/conversation: ~15 on 11-11..13, 9.4 on 11-14, 7.9 on 11-15 → explains most of the
+91 → 89 % drop. Caveat: prompt_cache_key identity (bd7bb4f, 11-14 10:44) may split conversations; unverified.
+Lever: turn-1 reuses only ~4.4k of 14.3k tokens across conversations (check aw4 system-prompt prefix stability).
 
 Owner approved all three steps 11-10. Swift live: `--parallel 2 --kv-unified -c 172032
 --cache-ram 18432 --ctx-checkpoints 8 --slot-prompt-similarity 0.9`, build a4d4f2fd4 + 0002-0004.
