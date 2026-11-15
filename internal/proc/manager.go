@@ -678,8 +678,13 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 		// A draining backend is finishing what it has and taking nothing new.
 		// Checked before the state test because a drained-and-evicted process
 		// would otherwise report the less useful "not ready".
+		//
+		// Transient: corrallm stopped it on purpose, and the next request
+		// loads it again, so an exhausted walk answers 429 + Retry-After
+		// (backpressure) rather than a bare 503.
 		if p.draining {
-			return nil, nil, false, fmt.Errorf("backend %s is draining (unload requested)", name)
+			return nil, nil, false, &CapacityError{RetryAfter: BackendRestartRetryAfter,
+				Reason: fmt.Sprintf("backend %s is draining (unload requested)", name)}
 		}
 		if p.state != StateReady {
 			return nil, nil, false, fmt.Errorf("backend %s not ready: %w", name, p.err)
