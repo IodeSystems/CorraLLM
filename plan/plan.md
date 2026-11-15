@@ -754,7 +754,13 @@ p7 47-min READOUT (10:55-11:42, 348 req, ended early by the P3 restart): decode 
 turn-1 34.9 % (n=23, base 45.6 %), forced full 15 (~19/h, base ~16/h); prefix_ckpt restores 23 / 386k tok, cache_copies 0.
 Read: no turn-1 gain visible; the copy path never fired → check why selection skips it before judging p7.
 P3 (owner 11-15 "184k. P3. Go."): Swift --parallel 3, -c 188416, --no-mmproj-offload; VRAM limit = 14-d observed max
-32,088 MiB (Prometheus nvidia_smi_memory_used_bytes, uuid ee90af07). Deploying 11:4x.
+32,088 MiB (Prometheus nvidia_smi_memory_used_bytes, uuid ee90af07).
+❌ P3 FAILED 11:46 + ROLLED BACK 11:48 (0 cut on drains; 8× 503 11:46:31-11:47:24): CUDA OOM in cublas_handle (cuBLAS workspace
+is allocated lazily on the FIRST request, after load). Load left ~275 MiB free. Buffers at 3 slots/188k: KV 6,256, RS 2,244,
+compute 1,023 (+82), MTP draft KV 736 + compute 255. My budget missed draft-KV growth and compute growth.
+Facts: Swift already has `--kv-unified-per-slot 86016` + contextPerRequest 86016 → 2 × 86k = 172k never spills; 3 slots can.
+Estimated 3-slot fit (steady, vs today's 31,836): -c 172032 ≈ 31,57x; -c 180224 ≈ 31,87x. Config backups: scratchpad cfg-p3*.yaml.
+**next:** owner picks 3 slots @172k (or 180k), ideally tested on a private port first; kvPool admission (building) guards spill.
 GAP: `corrallm tools build` from the CLI activates WITHOUT the benchmark gate (p6 and p7 both ungated); the gated path
 needs the daemon API + admin token (disabled). Owner decides: CLI `--gate` flag or accept.
 Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
