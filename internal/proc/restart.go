@@ -2,6 +2,8 @@ package proc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -66,6 +68,14 @@ type RestartResult struct {
 	// CmdChanged reports that the command run differs from the previous one
 	// (after ${tool:x} expansion and slot tuning).
 	CmdChanged bool
+	// OldCmdHash and NewCmdHash identify the command each process ran (after
+	// ${tool:x} expansion and slot tuning): CmdHash of it, so an operator can
+	// match the respawn against the config they loaded.
+	OldCmdHash, NewCmdHash string
+	// StaleConfig reports that the config was reloaded after the new process
+	// was spawned and its cmd differs: the replacement does not run what the
+	// config holds now, and a second restart is needed to pick it up.
+	StaleConfig bool
 	// Drained and Loaded are how long each half took.
 	Drained, Loaded time.Duration
 }
@@ -143,6 +153,7 @@ func (m *Manager) Restart(ctx context.Context, served string, o RestartOptions) 
 		return res, fmt.Errorf("model %q is %s, not ready", served, st)
 	}
 	oldCmd := p.spawnedCmd
+	res.OldCmdHash = CmdHash(oldCmd)
 	if p.handle != nil {
 		res.OldID = p.handle.ID()
 	}
@@ -193,6 +204,10 @@ func (m *Manager) Restart(ctx context.Context, served string, o RestartOptions) 
 
 	progress("loading", "starting it from the current config")
 	loadStart := time.Now()
+	// EnsureReady resolves the model from the config current at this moment,
+	// not from mdl (read before the drain): a reload during the drain, or a
+	// held request carrying a pre-reload copy that wins the respawn, still
+	// spawns the newest cmd.
 	np, release, _, err := m.EnsureReady(WithRequester(ctx, restartRequester), served, mdl, nil, nil)
 	if err != nil {
 		return res, fmt.Errorf("restart: the old process stopped, the new one did not come up: %w", err)
@@ -204,8 +219,40 @@ func (m *Manager) Restart(ctx context.Context, served string, o RestartOptions) 
 		res.NewID = np.handle.ID()
 	}
 	res.CmdChanged = oldCmd != "" && np.spawnedCmd != oldCmd
+	res.NewCmdHash = CmdHash(np.spawnedCmd)
+	configCmd, placement := np.configCmd, np.placement
 	np.mu.Unlock()
+	res.StaleConfig = configCmd != "" && m.configCmdNow(served, placement) != configCmd
 	return res, nil
+}
+
+// configCmdNow is the configured cmd the current config gives a served model
+// at one placement (by name), or "" when it has none.
+func (m *Manager) configCmdNow(served, placement string) string {
+	cfg := m.config()
+	if cfg == nil {
+		return ""
+	}
+	mdl, ok := cfg.Effective(served)
+	if !ok {
+		return ""
+	}
+	for _, pl := range mdl.PlacementList() {
+		if pl.Name == placement {
+			return mdl.ForPlacement(pl).Cmd
+		}
+	}
+	return mdl.Cmd
+}
+
+// CmdHash is a short, stable id of a spawned command line: the first 12 hex
+// digits of its SHA-256. "" for no command.
+func CmdHash(cmd string) string {
+	if cmd == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(cmd))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 // Stopping reports that corrallm has ordered this process to stop: it is

@@ -105,3 +105,21 @@ func TestRestartViaDaemonRejectedReload(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+// The summary names the cmd hashes so an operator can check the respawn ran
+// the config they loaded, and warns when a reload landed after the spawn.
+func TestRestartSummaryShowsCmdHash(t *testing.T) {
+	res := proc.RestartResult{Running: true, OldID: "pgid:1", NewID: "pgid:2",
+		CmdChanged: true, OldCmdHash: "aaaaaaaaaaaa", NewCmdHash: "bbbbbbbbbbbb"}
+	if got := restartSummary(res); !strings.Contains(got, "cmd changed aaaaaaaaaaaa -> bbbbbbbbbbbb") {
+		t.Errorf("summary %q", got)
+	}
+	res.CmdChanged, res.OldCmdHash = false, "bbbbbbbbbbbb"
+	if got := restartSummary(res); !strings.Contains(got, "cmd unchanged, bbbbbbbbbbbb") || strings.Contains(got, "WARNING") {
+		t.Errorf("summary %q", got)
+	}
+	res.StaleConfig = true
+	if got := restartSummary(res); !strings.Contains(got, "WARNING") {
+		t.Errorf("summary %q", got)
+	}
+}

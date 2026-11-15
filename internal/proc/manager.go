@@ -189,11 +189,15 @@ type Process struct {
 	// tuning fired, and that difference was previously only visible by reading
 	// the live process's argv.
 	spawnedCmd string
-	ready      chan struct{} // closed when load resolves; supports coalescing
-	err        error
-	draining   bool      // unload requested: finish in-flight work, admit nothing new
-	refs       int       // in-flight requests holding this backend
-	readyAt    time.Time // when it became ready (min-residency anchor)
+	// configCmd is the model's cmd as CONFIGURED when this process was
+	// spawned (before ${tool:} expansion and tuning). A restart compares it
+	// with the current config to tell whether a reload landed after the spawn.
+	configCmd string
+	ready     chan struct{} // closed when load resolves; supports coalescing
+	err       error
+	draining  bool      // unload requested: finish in-flight work, admit nothing new
+	refs      int       // in-flight requests holding this backend
+	readyAt   time.Time // when it became ready (min-residency anchor)
 	// loadedAt is when this backend's weights were loaded: the spawn, or —
 	// for a backend adopted from an agent — the start time the agent reports,
 	// which survives primary restarts and handoffs. NOT when this primary
@@ -484,12 +488,18 @@ func (m *Manager) SetVRAMMargin(mb int) {
 // member loaded on the lane's behalf may unload sooner); nil → model's own.
 func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model, sticky *config.Sticky, cred *config.Credential) (proc *Process, release func(), loaded bool, err error) {
 	asked := mdl // as the caller passed it, for a retry after a refresh drain
-	// A provided model carries no cmd/server/ramUsage — those live on its
-	// extension. Overlay here, at the one door every caller comes through, so
-	// nothing upstream has to know the difference.
-	if mdl.Extension != "" && m.config() != nil {
-		if eff, ok := m.config().Effective(name); ok {
-			mdl = eff
+	// Resolve the model from the CURRENT config by name, at the one door every
+	// caller comes through. A caller's copy can be a snapshot from before a
+	// reload: a request resolves its candidates, then waits in the scheduler
+	// queue or in a restart's drain hold for minutes. Spawning from that copy
+	// ran the OLD cmd after a reload (11-15: `backend restart` respawned Swift
+	// with the pre-reload cmd because a held request won the respawn).
+	// Effective also overlays a provided model's cmd/server/ramUsage from its
+	// extension. A name the config does not declare (a discovered model, a
+	// glob instance) has no current entry; the caller's copy is all there is.
+	if cfg := m.config(); cfg != nil {
+		if cur, ok := cfg.Effective(name); ok {
+			mdl = cur
 		}
 	}
 
@@ -909,7 +919,7 @@ func (m *Manager) load(name string, mdl config.Model, p *Process) {
 			return
 		}
 		p.mu.Lock()
-		p.handle, p.spawnedCmd, p.loadedAt = h, cmdStr, spawnAt
+		p.handle, p.spawnedCmd, p.configCmd, p.loadedAt = h, cmdStr, mdl.Cmd, spawnAt
 		p.mu.Unlock()
 		go func() {
 			<-h.Done()

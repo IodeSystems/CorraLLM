@@ -199,3 +199,147 @@ func mustNode(t *testing.T, v string) yaml.Node {
 	}
 	return n
 }
+
+// 11-15: a config reload changed the cmd, then `backend restart` respawned the
+// OLD cmd ("cmd unchanged"). A request held through the drain carried the
+// model as resolved before the reload, and its retry won the respawn. Any
+// spawn must run the cmd the config holds at spawn time.
+func TestRestartHeldStaleSnapshotSpawnsCurrentCmd(t *testing.T) {
+	defer func(d time.Duration) { refreshPoll = d }(refreshPoll)
+	refreshPoll = 10 * time.Millisecond
+	cfg := restartCfg(t, "exec sleep 300")
+	stale := cfg.Models["A"] // a request's copy, resolved before the reload
+	m := NewManager(cfg)
+	defer m.Shutdown()
+
+	old, releaseOld, _, err := m.EnsureReady(context.Background(), "A", stale, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetConfig(restartCfgOn(t, "exec sleep 301", portOf(cfg)))
+
+	restarted := make(chan RestartResult, 1)
+	stages := make(chan string, 8)
+	go func() {
+		res, err := m.Restart(context.Background(), "A", RestartOptions{DrainTimeout: 10 * time.Second,
+			Progress: func(s, _ string) { stages <- s }})
+		if err != nil {
+			t.Errorf("restart: %v", err)
+		}
+		restarted <- res
+	}()
+	if s := <-stages; s != "draining" {
+		t.Fatalf("first stage %q, want draining", s)
+	}
+	// Several held requests, each with the pre-reload copy: one of them, or
+	// the restart, spawns the replacement; whichever does must use the new cmd.
+	const n = 4
+	held := make(chan *Process, n)
+	for range n {
+		go func() {
+			p, release, _, err := m.EnsureReady(context.Background(), "A", stale, nil, nil)
+			if err != nil {
+				t.Errorf("held request refused: %v", err)
+				held <- nil
+				return
+			}
+			release()
+			held <- p
+		}()
+	}
+	time.Sleep(50 * time.Millisecond) // let them reach the drain hold
+	releaseOld()
+	for range n {
+		select {
+		case p := <-held:
+			if p == nil || p == old {
+				t.Fatalf("held request got %v, want the replacement", p)
+			}
+			if p.spawnedCmd != "exec sleep 301" {
+				t.Errorf("replacement runs %q, want the current config's cmd", p.spawnedCmd)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("held request never served")
+		}
+	}
+	res := <-restarted
+	if !res.CmdChanged || res.StaleConfig {
+		t.Errorf("result %+v, want cmd changed, not stale", res)
+	}
+	if res.OldCmdHash != CmdHash("exec sleep 300") || res.NewCmdHash != CmdHash("exec sleep 301") {
+		t.Errorf("hashes %s -> %s, want %s -> %s", res.OldCmdHash, res.NewCmdHash,
+			CmdHash("exec sleep 300"), CmdHash("exec sleep 301"))
+	}
+}
+
+// A reload that lands while the restart drains: the respawn uses the newest
+// config, not the one the restart read when it began.
+func TestRestartReloadDuringDrainUsesNewest(t *testing.T) {
+	defer func(d time.Duration) { refreshPoll = d }(refreshPoll)
+	refreshPoll = 10 * time.Millisecond
+	cfg := restartCfg(t, "exec sleep 300")
+	m := NewManager(cfg)
+	defer m.Shutdown()
+
+	_, releaseOld, _, err := m.EnsureReady(context.Background(), "A", cfg.Models["A"], nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := make(chan RestartResult, 1)
+	stages := make(chan string, 8)
+	go func() {
+		res, err := m.Restart(context.Background(), "A", RestartOptions{DrainTimeout: 10 * time.Second,
+			Progress: func(s, _ string) { stages <- s }})
+		if err != nil {
+			t.Errorf("restart: %v", err)
+		}
+		restarted <- res
+	}()
+	if s := <-stages; s != "draining" {
+		t.Fatalf("first stage %q, want draining", s)
+	}
+	m.SetConfig(restartCfgOn(t, "exec sleep 302", portOf(cfg)))
+	releaseOld()
+	res := <-restarted
+	if p := current(m, "A"); p == nil || p.spawnedCmd != "exec sleep 302" {
+		t.Fatalf("replacement %v, want cmd %q", p, "exec sleep 302")
+	}
+	if !res.CmdChanged || res.StaleConfig || res.NewCmdHash != CmdHash("exec sleep 302") {
+		t.Errorf("result %+v", res)
+	}
+}
+
+// A request admitted before a reload, whose cold load starts after it, spawns
+// the current cmd, not the one in its copy.
+func TestColdLoadWithStaleSnapshotSpawnsCurrentCmd(t *testing.T) {
+	cfg := restartCfg(t, "exec sleep 300")
+	stale := cfg.Models["A"]
+	m := NewManager(cfg)
+	defer m.Shutdown()
+	m.SetConfig(restartCfgOn(t, "exec sleep 301", portOf(cfg)))
+	p, release, _, err := m.EnsureReady(context.Background(), "A", stale, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if p.spawnedCmd != "exec sleep 301" {
+		t.Errorf("spawned %q, want the current config's cmd", p.spawnedCmd)
+	}
+}
+
+// StaleConfig is judged against the config current when the restart ends.
+func TestConfigCmdNow(t *testing.T) {
+	cfg := restartCfg(t, "exec sleep 300")
+	m := NewManager(cfg)
+	defer m.Shutdown()
+	if got := m.configCmdNow("A", "box"); got != "exec sleep 300" {
+		t.Errorf("got %q", got)
+	}
+	m.SetConfig(restartCfgOn(t, "exec sleep 303", portOf(cfg)))
+	if got := m.configCmdNow("A", "box"); got != "exec sleep 303" {
+		t.Errorf("after reload got %q", got)
+	}
+	if got := m.configCmdNow("nope", "box"); got != "" {
+		t.Errorf("unknown model got %q", got)
+	}
+}

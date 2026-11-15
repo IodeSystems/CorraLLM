@@ -187,9 +187,12 @@ func restartSummary(res proc.RestartResult) string {
 	if !res.Running {
 		return "it was not running; its next request starts it with the current config"
 	}
-	cmd := "cmd unchanged"
+	cmd := "cmd unchanged, " + res.NewCmdHash
 	if res.CmdChanged {
-		cmd = "cmd changed"
+		cmd = "cmd changed " + res.OldCmdHash + " -> " + res.NewCmdHash
+	}
+	if res.StaleConfig {
+		cmd += "; WARNING: the config was reloaded after the spawn and its cmd differs, restart again to pick it up"
 	}
 	return fmt.Sprintf("%s -> %s (%s); drained in %s (%d in flight, %d cut); loaded in %s",
 		res.OldID, res.NewID, cmd, res.Drained.Round(time.Millisecond), res.InFlight, res.Cut, res.Loaded.Round(time.Millisecond))
