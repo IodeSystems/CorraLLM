@@ -187,6 +187,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.Utilization)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "slotLoad",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/utilization/slot-load",
+		Summary:     "Per local model: aggregate tok/s, slot occupancy and queue wait, now and over the last 1 and 15 minutes.",
+		Tags:        []string{"observability"},
+	}, h.SlotLoad)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "serviceProfiles",
 		Method:      http.MethodGet,
 		Path:        "/api/v1/utilization/profiles",
