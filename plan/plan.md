@@ -781,6 +781,18 @@ Rollback triggers: CUDA OOM, VRAM > 32,088, > 2 context-exceeded failures/h to c
 config load --force scratchpad/cfg-p3c.pre.yaml + reload + backend restart --drain 2m.
 Open: slotLoad + groups API answer 401 "admin token required" to curl (admin token disabled) — dashboard panel unverified
 in a signed-in browser. aw4 reasoning cap (budget 2500) held on aw4 issue i_1m7ge0tfm0ff74p33g6bgt; may land mid-test.
+P3c interrupted 13:32:05-13:51:35 PST for profiling (3 restarts). 1 h check 12:25-13:25 passed: 114.8 tok/s total, decode p50
+54.3, queue p50 3.8 s, TTFT p50 6.4 s, 0 OOM / context-full, 10 kv holds.
+NSYS PROFILE 13:42:26-13:45:26 (scratchpad nsys/swift-3904158.{nsys-rep,sqlite}, nsysan/a*.py): decode step median 59.2 ms
+(1,868 steps, ~3 tok/slot/step). Verify graph 37.5 ms (62 %); target sampling CPU, per slot sequential 6.9 ms (12 %,
+server-context.cpp:5254-5290, sampling.cpp:159/:736); draft-loop host work 6.6 ms (11 %, speculative.cpp:1908/:1926 —
+~16 small copies+syncs per draft step); draft graphs 6.0 ms (drafts ARE batched across slots); 93.5 % of GPU idle = CPU work
+on the server thread. KV q8_0→f16 dequant in verify = 15.5 % of kernel time, ~9.4 ms/step (fattn.cu:704-720: MMA path
+converts the whole K/V view per layer per step). Swaps/checkpoints ~3 %. Upper bound if all three fixed: 59 → ~35 ms/step.
+Fix candidates (owner picks): (1) target sampling off the CPU loop (--backend-sampling experimental, or parallel per-slot);
+(2) GPU-resident 4-step draft loop; (3) q8_0 KV read without full-view dequant.
+BUG (corrallm): `backend restart` at 13:32:05 spawned the OLD cmd after a config reload ("cmd unchanged") — likely a request
+queued before the reload carried the old model config. Needs a fix: restart must spawn from the current config.
 GAP: `corrallm tools build` from the CLI activates WITHOUT the benchmark gate (p6 and p7 both ungated); the gated path
 needs the daemon API + admin token (disabled). Owner decides: CLI `--gate` flag or accept.
 Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
