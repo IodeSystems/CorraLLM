@@ -2322,6 +2322,13 @@ type BackendLoadView struct {
 	Active   int             `json:"active" doc:"Slots in use."`
 	Waiting  int             `json:"waiting" doc:"Queued requests."`
 	Groups   []GroupLoadView `json:"groups" doc:"Per-group breakdown."`
+
+	// KV-pool admission (config kvPool); all 0 without one.
+	KVPool      int   `json:"kvPool" doc:"KV pool in tokens (config kvPool.tokens); 0: no KV-pool admission."`
+	KVInService int   `json:"kvInService" doc:"Expected KV tokens of the requests in service now (estimated prompt + output reserve)."`
+	KVPeak      int   `json:"kvPeak" doc:"Highest in-service KV tokens since corrallm started."`
+	KVHeld      int   `json:"kvHeld" doc:"Queued requests the KV pool holds now."`
+	KVHolds     int64 `json:"kvHolds" doc:"Requests the KV pool held in the queue since corrallm started."`
 }
 
 // GroupsOutput reports priority groups and per-backend admission load.
@@ -2365,6 +2372,7 @@ func (h *Handlers) Groups(_ context.Context, _ *GroupsInput) (*GroupsOutput, err
 		bv := BackendLoadView{
 			Backend: b.Backend, Capacity: b.Capacity, Active: b.Active, Waiting: b.Waiting,
 			Groups: make([]GroupLoadView, 0, len(b.Groups)),
+			KVPool: b.KVPool, KVInService: b.KVInService, KVPeak: b.KVPeak, KVHeld: b.KVHeld, KVHolds: b.KVHolds,
 		}
 		for _, g := range b.Groups {
 			bv.Groups = append(bv.Groups, GroupLoadView{Group: g.Group, Active: g.Active, Waiting: g.Waiting})

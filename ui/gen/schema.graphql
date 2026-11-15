@@ -1075,6 +1075,16 @@ type corrallm_BackendLoadView {
   capacity: Long!
   """Per-group breakdown."""
   groups: [corrallm_GroupLoadView!]!
+  """Queued requests the KV pool holds now."""
+  kvHeld: Long!
+  """Requests the KV pool held in the queue since corrallm started."""
+  kvHolds: Long!
+  """Expected KV tokens of the requests in service now (estimated prompt + output reserve)."""
+  kvInService: Long!
+  """Highest in-service KV tokens since corrallm started."""
+  kvPeak: Long!
+  """KV pool in tokens (config kvPool.tokens); 0: no KV-pool admission."""
+  kvPool: Long!
   """Queued requests."""
   waiting: Long!
 }
