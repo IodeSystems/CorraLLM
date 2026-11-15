@@ -510,6 +510,14 @@ validator clean; z-up→y-up (x,z,−y)), log; video → 400 (no ffmpeg). E2E 30
 ~4 s, resumed at view 26/30; exhaustive matcher ignores SIGTERM in a block → force-kill after 10 s. D7 restart mid-map → 30/30.
 Lease sizes (3200 px): extract 6,144 / match 5,632 / dense 5,120 MiB (dense estimated). extension: port 5822, persistent,
 model colmap-sfm, routes ×3, lease max gpu1 8GB. Only a FAKE lease server exercised so far.
+✅ 11-14 16:08 COLMAP LIVE (owner "Colmap and sam live please"): handoff to v0.3.0-43-gfac75ce (built from a clean
+worktree; P80 not yet in it), config rev 250 adds extensions.colmap (port 5822, token via `config secret set`).
+T1a real lease: 12 images sparse 1024 px → 8 s, 12/12, leases granted/released, transforms + sparse downloaded.
+T1b NOT DONE: guard (5.6 s) and chandra (21.8 s) loads fit beside the lease → no yield; BUT chandra's load made corrallm
+evict idle guard, nomic AND SWIFT (5090) because makeRoomLocked evicted any idle model sharing a pool (`system`) even when
+freeing it gave no gpu1 memory → aw4's next request waited 83 s (200). Fix 178a885 (evict only residents that free a short
+pool; regression test) + e766b01 (glb content type) cherry-picked to main, tests pass, NOT deployed. Other issues:
+multipart uploads logged as status 100 (Expect: 100-continue); job polling writes one activity row per GET (593 in test).
 **next:** owner go → install, COLMAP_LEASE_TOKEN in ~/.corrallm/credentials, merge block, corrallm RESTART (routes mount at
 boot; evicts resident models incl. Swift) → T1a/T1b against the real lease manager. **open:** Poisson depth default (43 min
 for 30 images); dense VRAM at 3200 px unmeasured.
