@@ -749,7 +749,12 @@ Swift cmd + `export LLAMA_PREFIX_CKPT=1`, restarted via backend restart --drain 
 base), 0 5xx, 0 crashes; prefix_ckpt restores 4 / 78.5k tok. Rollback: `corrallm tools activate llama.cpp
 20261114-215547-b1b770d9 --server box1` + config from scratchpad cfg-p7.pre.yaml + reload + backend restart --drain.
 1 h readout baseline (07:49-10:49): turn-1 hit 45.6 % (78 req), forced full re-processing ~16/h, swap p50/p90 297/501 ms.
-Script: scratchpad p7check.sh. **next:** 1 h readout ~11:56.
+Script: scratchpad p7check.sh.
+p7 47-min READOUT (10:55-11:42, 348 req, ended early by the P3 restart): decode p50 77.5 tok/s, 0 5xx, 0 crashes, hit 89.3 %;
+turn-1 34.9 % (n=23, base 45.6 %), forced full 15 (~19/h, base ~16/h); prefix_ckpt restores 23 / 386k tok, cache_copies 0.
+Read: no turn-1 gain visible; the copy path never fired → check why selection skips it before judging p7.
+P3 (owner 11-15 "184k. P3. Go."): Swift --parallel 3, -c 188416, --no-mmproj-offload; VRAM limit = 14-d observed max
+32,088 MiB (Prometheus nvidia_smi_memory_used_bytes, uuid ee90af07). Deploying 11:4x.
 GAP: `corrallm tools build` from the CLI activates WITHOUT the benchmark gate (p6 and p7 both ungated); the gated path
 needs the daemon API + admin token (disabled). Owner decides: CLI `--gate` flag or accept.
 Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
