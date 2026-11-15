@@ -739,7 +739,12 @@ only up to a checkpoint <= lcp; entries keep checkpoints near prompt end only �
 re-processing". Shared prefixes exist: system+tools 2,977 / 3,806 tok, deeper 7k-20k. Upper bound per 24 h: checkpoint fix
 25 → 46 % turn-1 reuse (+2.69M tok, ~25 min prefill); + perfect retention 57 % (+1.56M, ~15 min). Proposed p7: keep the
 first-user-message (system-prefix) checkpoint in every entry (+ optional message-boundary ones), ~150 MiB/entry.
-**blocking decision:** owner go for p7 canary.
+p7 WRITTEN 11-15 (parked, not in patches/): scratchpad p7/p7-prefix-checkpoint.patch (+269/−6, 7 files) on p1..p6 @ b1b770d9.
+Pins the first-user-message checkpoint; env LLAMA_PREFIX_CKPT=1 (off by default), _MIN (256 tok), _BOUNDARIES (0);
+cache may COPY (not move) an entry for its pinned prefix; metrics llamacpp:prefix_ckpt_*. CPU tests: same-system new
+conversation 0 → 337 of 353 tok cached; pytest 82 pass / 9 fail identical to p1..p6 base. Untested: CUDA, 27B, 2 slots, with p6.
+Risk: the copy path restores a long entry's full state then truncates (host→GPU bytes unmeasured).
+**blocking decision:** owner go for p7 canary (copy to patches/ → gated build → LLAMA_PREFIX_CKPT=1 in Swift cmd).
 Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
 entry → recheck the knee after p7.
 11-15 BOTTOM LINE (agent, 7 d, 68.6k Swift req, 324M prompt tok/day, hit 90.2 %; scratchpad bottomline.json, cf_*.py):
