@@ -43,6 +43,13 @@ models:
     type: local
     quality: 100
     maxConcurrent: 2          # admission slots (≈ --parallel)
+    # kvPool: KV-pool admission for a --kv-unified llama-server, whose slots
+    # share one pool (-c). Holds a request in the queue while the in-service
+    # requests' expected KV (prompt estimate + min(max_tokens, reserveTokens))
+    # plus its own would pass `tokens`. A lone request is always admitted;
+    # smaller requests pass a held one for at most bypassFor. Off when unset.
+    # Matters only when slots × per-slot cap (contextPerRequest) > tokens.
+    # kvPool: { tokens: 188416, reserveTokens: 4096, bypassFor: 30s }
 
   # Standalone proxy model: the same capability via a paid remote endpoint.
   qwen3-coder-claude:

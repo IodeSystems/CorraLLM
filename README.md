@@ -184,6 +184,20 @@ callers fall into the `default` group.
   `X-Corrallm-Conversation` header, else inferred from its head; a declared id
   is scoped by caller key
   (`/v1/capabilities` → `conversation`).
+  For a model with `kvPool` (a `--kv-unified` llama-server, whose slots share
+  one KV pool), corrallm holds a request in the queue while the expected KV of
+  the requests in service plus its own would pass `kvPool.tokens`. Expected KV
+  is the prompt estimate (the larger of body bytes ÷ 4 and the conversation's
+  previous context) plus min(`max_tokens`, `kvPool.reserveTokens`, default
+  4096), capped at `contextPerRequest`. Idle slots do not count; a request with
+  nothing else in service is always admitted. Smaller requests may pass a held
+  one for `kvPool.bypassFor` (default 30s), then wait until it fits.
+  It matters only when slots × the per-slot cap (`contextPerRequest`,
+  `--kv-unified-per-slot`) is more than the pool. A llama-server reply
+  `500 Context size has been exceeded.` (its KV-full failure) before any byte
+  reached the caller is re-queued once; the activity note says
+  `kv-pool-held` / `kv-full-retried`. Live: `kvInService`, `kvPeak`, `kvHolds`
+  on the groups view's backends.
 - **Liveness** (open): `GET /health`, `/healthz`.
 - **Management** (admin token via `Authorization: Bearer` or the `corrallm_token`
   cookie): `POST /api/graphql` and REST at `/api/v1/*` — `overview`, `lanes`,
