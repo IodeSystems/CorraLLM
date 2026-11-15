@@ -520,8 +520,13 @@ pool; regression test) + e766b01 (glb content type) cherry-picked to main, tests
 multipart uploads logged as status 100 (Expect: 100-continue); job polling writes one activity row per GET (593 in test).
 ✅ 16:2x DEPLOYED v0.3.0-51-g5c194ec (owner "Yes hit it"): P80 + eviction fix live; aw4 told 503 backend_restarting is
 retryable. Swift reloaded during the handoff (pid 3494216 → 3500344), yet 55 Swift requests in the window were all 200, 0 5xx
-(P80 held them). p6 still on (xslot_attach_total 4 after reload). ◐ T1b forced-yield retry (agent; chandra vs a ~5 GiB
-PatchMatch lease; abort if Swift's pid changes).
+(P80 held them). p6 still on (xslot_attach_total 4 after reload). ✅ T1b PASSED 16:41-16:57: 12 images 3072 px dense, lease 4,718 MiB; chandra (6,210 MiB measured) + nomic 1,430 >
+10,240 MiB gpu1 → yield. OCR request 200 in 14.6 s (10 s yield + ~4 s load). PatchMatch ignored SIGTERM → SIGKILL at
+--yield-kill 10 s (half view lost); lease re-granted 16:42:24 after chandra idled, resumed at view 3/12 (1-2 skipped),
+completed 12/12, dense 20.6 MB + transforms downloaded. Swift untouched, 0 5xx. Follow-ups: (a) dense lease over-declared
+(PatchMatch used 1,698-1,996 MiB at 3072 px vs 4,718 leased) → shrink so chandra fits beside it; (b) re-grant evicted
+nomic as well as chandra (no pruning of unneeded victims) — owner call; (c) D7 untested (no test hook); (d) job log
+prints retry_after=0s (text only).
 **next:** owner go → install, COLMAP_LEASE_TOKEN in ~/.corrallm/credentials, merge block, corrallm RESTART (routes mount at
 boot; evicts resident models incl. Swift) → T1a/T1b against the real lease manager. **open:** Poisson depth default (43 min
 for 30 images); dense VRAM at 3200 px unmeasured.
