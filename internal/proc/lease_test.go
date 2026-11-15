@@ -408,3 +408,95 @@ func TestLeaseDoesNotYieldLease(t *testing.T) {
 		t.Errorf("first lease state = %s, want held", st.State)
 	}
 }
+
+// pruneConfig: gpu1 10 bytes; nomic 2, chandra 6 (8 used, 2 free).
+func pruneMgr(t *testing.T) (*Manager, *config.Config) {
+	t.Helper()
+	body := fmt.Sprintf(`
+servers:
+  box:
+    pools: { gpu1: "10", system: "100" }
+models:
+  nomic:   { cmd: "exec sleep 30", server: box, proxy: %d, ramUsage: { gpu1: "2" }, type: embedding }
+  chandra: { cmd: "exec sleep 30", server: box, proxy: %d, ramUsage: { gpu1: "6" }, type: chat }
+extensions:
+  colmap:
+    cmd: "exec sleep 30"
+    server: box
+    proxy: %d
+    ramUsage: { system: "1" }
+    lease: { token: t, max: { gpu1: "10", system: "50" }, yieldGrace: 60s }
+    provides:
+      sfm: { type: reconstruction }
+`, listenTCP(t), listenTCP(t), listenTCP(t))
+	p := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(cfg)
+	m.healthTimeout = 5 * time.Second
+	m.activeUse = 0
+	m.leaseProtect = 0
+	t.Cleanup(m.Shutdown)
+	ctx := context.Background()
+	for _, n := range []string{"nomic", "chandra"} { // nomic first: the LRU victim
+		_, done, _, err := m.EnsureReady(ctx, n, cfg.Models[n], nil, nil)
+		if err != nil {
+			t.Fatalf("load %s: %v", n, err)
+		}
+		done()
+	}
+	return m, cfg
+}
+
+// 11-14 T1b: a lease short on gpu1 evicted LRU nomic and then chandra, though
+// chandra alone frees enough. The greedy pick is pruned: nomic stays.
+func TestLeaseEvictsMinimalVictimSet(t *testing.T) {
+	m, _ := pruneMgr(t)
+	if _, err := m.AcquireLease(context.Background(), gpuLease(7, true)); err != nil {
+		t.Fatalf("lease 7: %v", err)
+	}
+	if !isResident(m, "nomic") {
+		t.Error("nomic evicted, but evicting chandra alone frees 8 ≥ 7")
+	}
+	if isResident(m, "chandra") {
+		t.Error("chandra still resident")
+	}
+}
+
+// When no single victim is enough, both go.
+func TestLeaseEvictsTwoWhenBothNeeded(t *testing.T) {
+	m, _ := pruneMgr(t)
+	if _, err := m.AcquireLease(context.Background(), gpuLease(9, true)); err != nil {
+		t.Fatalf("lease 9: %v", err)
+	}
+	if isResident(m, "nomic") || isResident(m, "chandra") {
+		t.Errorf("nomic resident %v, chandra resident %v; 9 needs both gone", isResident(m, "nomic"), isResident(m, "chandra"))
+	}
+}
+
+// When either victim alone is enough, the one sorted first (LRU) goes: the
+// prune spares later victims first, so the eviction order still decides.
+func TestLeaseMinimalSetKeepsEvictionOrder(t *testing.T) {
+	m, _ := pruneMgr(t)
+	if _, err := m.AcquireLease(context.Background(), gpuLease(2, true)); err != nil {
+		t.Fatalf("lease 2: %v", err) // 2 free: fits without eviction
+	}
+	if !isResident(m, "nomic") || !isResident(m, "chandra") {
+		t.Fatal("evicted although the lease fit")
+	}
+	// 2 more: nomic (2) or chandra (6) each frees enough; LRU nomic goes.
+	if _, err := m.AcquireLease(context.Background(), gpuLease(2, true)); err != nil {
+		t.Fatalf("second lease 2: %v", err)
+	}
+	if isResident(m, "nomic") {
+		t.Error("nomic (LRU, enough alone) still resident")
+	}
+	if !isResident(m, "chandra") {
+		t.Error("chandra evicted, but nomic alone was enough")
+	}
+}

@@ -352,9 +352,10 @@ func (m *Manager) yieldForLocked(server string, usage map[string]int64, incoming
 		}
 	}
 	if !fits {
-		for _, v := range idle {
+		for i, v := range idle {
 			victims[v.Name] = v
 			if m.fitsExceptLocked(server, usage, victims, chosen) {
+				m.pruneVictimsLocked(server, usage, idle[:i+1], victims, chosen)
 				fits = true
 				break
 			}

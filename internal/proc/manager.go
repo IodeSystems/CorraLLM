@@ -2085,11 +2085,13 @@ func (m *Manager) makeRoomLocked(server string, usage map[string]int64, incoming
 	}
 	sortVictims(victims)
 
-	// Greedily select victims until the request fits.
+	// Greedily select victims until the request fits, then drop the ones
+	// that turned out not to be needed.
 	freed := map[string]*Process{}
-	for _, v := range victims {
+	for i, v := range victims {
 		freed[v.Name] = v
 		if m.fitsLocked(server, usage, freed) {
+			m.pruneVictimsLocked(server, usage, victims[:i+1], freed, nil)
 			names := make([]string, 0, len(freed))
 			for _, e := range freed {
 				e.setStopReason("evicted-for:" + incoming)
@@ -2110,6 +2112,26 @@ func (m *Manager) makeRoomLocked(server string, usage map[string]int64, incoming
 		}
 	}
 	return nil, nil, m.capacityErrorLocked(server, usage, now)
+}
+
+// pruneVictimsLocked removes from freed every victim the request fits
+// without. picked is the greedy selection in eviction order; the pass runs in
+// reverse, so a victim sorted later (less preferred to evict) is spared first
+// and the priority/ttl order stays the tie-breaker. 11-14 T1b: a lease
+// re-grant short on gpu1 picked idle nomic, then chandra, and evicted both,
+// though chandra alone freed enough. leases are counted as released (the
+// yield pass). Caller holds m.mu.
+func (m *Manager) pruneVictimsLocked(server string, usage map[string]int64, picked []*Process, freed map[string]*Process, leases []*Lease) {
+	for i := len(picked) - 1; i >= 0; i-- {
+		v := picked[i]
+		if _, ok := freed[v.Name]; !ok {
+			continue
+		}
+		delete(freed, v.Name)
+		if !m.fitsExceptLocked(server, usage, freed, leases) {
+			freed[v.Name] = v
+		}
+	}
 }
 
 // capacityErrorLocked classifies a failed makeRoom into permanent vs transient.
