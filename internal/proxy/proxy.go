@@ -3589,7 +3589,7 @@ var routeContentTypes = func() map[string]struct{ in, out []string } {
 		"/v1/access-requests":      {[]string{js}, []string{js}},
 		"/v1/files":                {[]string{mp}, []string{js, "application/octet-stream"}},
 		"/v1/uploads":              {[]string{js, mp}, []string{js}},
-		"/v1/reconstructions":      {[]string{js, mp}, []string{js, "application/zip", "text/plain"}},
+		"/v1/reconstructions":      {[]string{js, mp}, []string{js, "application/zip", "model/gltf-binary", "text/plain"}},
 	}
 }()
 
