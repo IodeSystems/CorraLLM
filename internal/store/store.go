@@ -654,6 +654,8 @@ var migrations = []string{
 	// What slot affinity did with the turn (P75 N9, 2026-11-11), for an on/off
 	// A/B. '' on every row before it, and while the model's flag is off.
 	`ALTER TABLE activity_cache ADD COLUMN affinity TEXT NOT NULL DEFAULT ''`,
+	// `corrallm backend restart` requests (2026-11-14): new table, see restart.go.
+	backendRestartSchema,
 }
 
 // dropStaleProbeTables removes a bench_probe_results created before A/B arms
