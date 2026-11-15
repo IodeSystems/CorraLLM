@@ -197,6 +197,16 @@ type backendState struct {
 	// ewmaDwell is the EWMA of measured service time (seconds) on this backend —
 	// the basis for an honest Retry-After. 0 until the first request completes.
 	ewmaDwell float64
+	// KV-pool admission (kvpool.go). kvPool is the last pool an ask named (0:
+	// no ask seen), kvInService the sum of in-service asks, kvPeak its high
+	// mark, kvHolds the requests the pool held (kvHoldsUnlogged: since the
+	// last log line, kvLogAt).
+	kvPool          int
+	kvInService     int
+	kvPeak          int
+	kvHolds         int64
+	kvHoldsUnlogged int64
+	kvLogAt         time.Time
 }
 
 // slot is one in-flight admission. cancel reclaims the request when the slot is
@@ -219,6 +229,8 @@ type slot struct {
 	priority bool
 	// hint is the llama.cpp slot this request would rather have (slotpref.go).
 	hint *SlotHint
+	// kv is the request's expected KV need (kvpool.go); nil: not tracked.
+	kv *KVAsk
 }
 
 type waiter struct {
@@ -239,6 +251,8 @@ type waiter struct {
 	// queuedAt and skipped bound slot-aware dequeue (slotpref.go).
 	queuedAt time.Time
 	skipped  int
+	// kvHeldAt is when the KV pool first held this waiter (kvpool.go).
+	kvHeldAt time.Time
 }
 
 // Admit acquires a slot on the named backend for a request in group (with
@@ -279,7 +293,7 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 
 	sl := &slot{group: group, backendType: backendType, weight: weight,
 		interruptible: interruptible, currency: s.shareCurrency(group), cancel: cancel,
-		since: waitingSince(ctx), priority: priorityFrom(ctx), hint: slotHintFrom(ctx)}
+		since: waitingSince(ctx), priority: priorityFrom(ctx), hint: slotHintFrom(ctx), kv: kvAskFrom(ctx)}
 
 	// Over a per-group / per-(group×type) limit budget? Preemption can't free a
 	// budget, so an over-budget request advances (spill) if the stage allows,
@@ -306,12 +320,23 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 	// reserved. The reserving lane sees full capacity (its own reservation doesn't
 	// count against it), so it gets an already-free slot; other lanes saturate early.
 	if bs.active < s.effCapLocked(bs, backend, group, now) {
-		bs.grant(sl, now)
-		if !gate {
-			s.recordAdmitLocked(now, group, backendType)
+		if bs.kvAdmitsArrivalLocked(sl, now) {
+			bs.grant(sl, now)
+			if !gate {
+				s.recordAdmitLocked(now, group, backendType)
+			}
+			s.mu.Unlock()
+			return s.releaser(backend, sl), reqCtx, nil
 		}
+		// A slot is free but the KV pool is short (or a held waiter's bypass
+		// window ran out): queue whatever the stage says (kvpool.go).
+		w := &waiter{slot: sl, ready: make(chan struct{}), bumped: make(chan struct{}), queuedAt: now}
+		if !bs.kvFitsLocked(sl) {
+			bs.kvHoldLocked(backend, w, now)
+		}
+		bs.waiters = append(bs.waiters, w)
 		s.mu.Unlock()
-		return s.releaser(backend, sl), reqCtx, nil
+		return s.wait(ctx, backend, w, reqCtx, modelMaxWait)
 	}
 
 	// Saturated. Preempt takes precedence over spill: if the stage allows it and
@@ -460,6 +485,7 @@ func (s *Scheduler) giveUp(backend string, w *waiter, reason string) (func(...Do
 	bs := s.backends[backend]
 	if bs != nil && bs.removeWaiter(w) {
 		be := bs.backpressureFor(s.now(), w.slot, reason)
+		s.repromoteKVLocked(bs, backend)
 		s.mu.Unlock()
 		w.slot.cancel(nil)
 		return nil, nil, be
@@ -475,6 +501,9 @@ func (s *Scheduler) leave(backend string, w *waiter, cause error) (func(...Done)
 	s.mu.Lock()
 	bs := s.backends[backend]
 	removed := bs != nil && bs.removeWaiter(w)
+	if removed {
+		s.repromoteKVLocked(bs, backend)
+	}
 	s.mu.Unlock()
 	if removed {
 		w.slot.cancel(nil)
@@ -503,6 +532,14 @@ type BackendLoad struct {
 	Active   int
 	Waiting  int
 	Groups   []GroupLoad
+	// KV-pool admission (kvpool.go), zero without a kvPool: the pool in
+	// tokens, the in-service sum of asks, its peak since start, the waiters
+	// the pool holds now, and the requests it held since start.
+	KVPool      int
+	KVInService int
+	KVPeak      int
+	KVHeld      int
+	KVHolds     int64
 	// EstWait is what a caller arriving RIGHT NOW would be told to wait if we
 	// refused them — the same estimate `backpressure` puts on the wire, not a
 	// second model of it. Reported whether or not the backend is saturated, so a
@@ -533,6 +570,12 @@ func (s *Scheduler) Snapshot() SchedSnapshot {
 			// the moment a read view computes the estimate its own way, the number
 			// an operator sees stops being the number callers are given.
 			EstWait: bs.backpressure("").RetryAfter,
+			KVPool:  bs.kvPool, KVInService: bs.kvInService, KVPeak: bs.kvPeak, KVHolds: bs.kvHolds,
+		}
+		for _, w := range bs.waiters {
+			if !w.kvHeldAt.IsZero() {
+				bl.KVHeld++
+			}
 		}
 		waitByGroup := map[string]int{}
 		for _, w := range bs.waiters {
@@ -583,6 +626,7 @@ func (s *Scheduler) releaser(backend string, sl *slot) func(...Done) {
 				delete(bs.groupActive, sl.group)
 			}
 			bs.removeSlot(sl)
+			bs.kvReleaseLocked(sl)
 			gate := isGate(backend)
 			if !gate {
 				s.recordReleaseLocked(now, sl.group, sl.backendType, dwell, cost)
@@ -604,6 +648,7 @@ func (s *Scheduler) releaser(backend string, sl *slot) func(...Done) {
 // grant claims a slot (caller holds s.mu).
 func (bs *backendState) grant(sl *slot, now time.Time) {
 	sl.admitAt = now
+	bs.kvGrantLocked(sl)
 	bs.active++
 	bs.groupActive[sl.group]++
 	bs.slots = append(bs.slots, sl)
@@ -637,6 +682,9 @@ func (s *Scheduler) promoteFreed(bs *backendState, backend string, now time.Time
 		if len(granted) == 0 {
 			idx = s.preferFreedSlot(bs, backend, now, idx, freed)
 		}
+		if idx = s.kvPickLocked(bs, backend, now, idx); idx < 0 {
+			break // the KV pool holds the rest (kvpool.go)
+		}
 		w := bs.waiters[idx]
 		bs.waiters = append(bs.waiters[:idx], bs.waiters[idx+1:]...)
 		bs.grant(w.slot, now)
@@ -654,21 +702,27 @@ func (s *Scheduler) promoteFreed(bs *backendState, backend string, now time.Time
 // min(numerator/weight) wins, but only among lanes with room under their effective
 // capacity (a lane can't fill slots reserved by another lane). Caller holds s.mu.
 func (s *Scheduler) pickGrantableWaiter(bs *backendState, backend string, now time.Time) int {
+	return s.pickGrantableWaiterIf(bs, backend, now, nil)
+}
+
+// pickGrantableWaiterIf is pickGrantableWaiter over the waiters ok accepts
+// (nil: all). Caller holds s.mu.
+func (s *Scheduler) pickGrantableWaiterIf(bs *backendState, backend string, now time.Time, ok func(*waiter) bool) int {
 	for i, w := range bs.waiters {
-		if w.preempt && bs.active < bs.capacity {
+		if w.preempt && bs.active < bs.capacity && (ok == nil || ok(w)) {
 			return i
 		}
 	}
 	// Priority waiters next, FIFO, each within its lane's effective capacity.
 	for i, w := range bs.waiters {
-		if w.slot.priority && !w.preempt && bs.active < s.effCapLocked(bs, backend, w.slot.group, now) {
+		if w.slot.priority && !w.preempt && bs.active < s.effCapLocked(bs, backend, w.slot.group, now) && (ok == nil || ok(w)) {
 			return i
 		}
 	}
 	currency := bs.queueCurrency()
 	bestIdx := -1
 	for i, w := range bs.waiters {
-		if w.preempt || bs.active >= s.effCapLocked(bs, backend, w.slot.group, now) {
+		if w.preempt || bs.active >= s.effCapLocked(bs, backend, w.slot.group, now) || (ok != nil && !ok(w)) {
 			continue
 		}
 		if bestIdx < 0 || bs.moreDeserving(now, currency, w.slot, bs.waiters[bestIdx].slot) {

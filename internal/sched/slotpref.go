@@ -101,7 +101,7 @@ func (s *Scheduler) preferFreedSlot(bs *backendState, backend string, now time.T
 	}
 	eligible := func(i int, w *waiter) bool {
 		return i != idx && !w.preempt && !w.slot.priority && w.slot.group == x.slot.group &&
-			bs.active < s.effCapLocked(bs, backend, w.slot.group, now)
+			bs.active < s.effCapLocked(bs, backend, w.slot.group, now) && bs.kvFitsLocked(w.slot)
 	}
 	// (a) the conversation that lives on the freed slot.
 	for i, w := range bs.waiters {
