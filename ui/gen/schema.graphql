@@ -305,6 +305,7 @@ type CorrallmQueryNamespace {
     """Absolute window end, epoch ms (exclusive). Overrides the relative window."""
     to: Long
   ): corrallm_ServiceProfilesOutputBody @derived(operationId: "serviceProfiles")
+  slotLoad: corrallm_SlotLoadOutputBody @derived(operationId: "slotLoad")
   spend: corrallm_SpendReport @derived(operationId: "spend")
   spendTokens: corrallm_SpendTokensOutputBody @derived(operationId: "spendTokens")
   toolBuildHistory(
@@ -690,6 +691,7 @@ type CorrallmV1QueryNamespace {
     """Absolute window end, epoch ms (exclusive). Overrides the relative window."""
     to: Long
   ): corrallm_ServiceProfilesOutputBody @derived(operationId: "serviceProfiles")
+  slotLoad: corrallm_SlotLoadOutputBody @derived(operationId: "slotLoad")
   spend: corrallm_SpendReport @derived(operationId: "spend")
   spendTokens: corrallm_SpendTokensOutputBody @derived(operationId: "spendTokens")
   toolBuildHistory(
@@ -2587,7 +2589,7 @@ type corrallm_ModelActionOutputBody {
 }
 
 type corrallm_ModelDef {
-  """chat|embeddings|audio.stt|audio.realtime|audio.tts|rerank (delivery surfaces kept distinct)."""
+  """chat|embeddings|audio.stt|audio.realtime|audio.tts|image.generate|image.segment|scene.reconstruct|rerank (delivery surfaces kept distinct)."""
   capability: String!
   """Spawn command (empty for pure-proxy)."""
   cmd: String!
@@ -3803,6 +3805,54 @@ type corrallm_Settings {
   parallel: Long!
   """--slot-prompt-similarity; -1 = not set"""
   slotSimilarity: Float!
+}
+
+type corrallm_SlotLoadOutputBody {
+  """Unix millis the windows end at."""
+  asOfMs: Long!
+  """Local models resident, busy, or with traffic in the longest window; busiest first."""
+  models: [corrallm_SlotLoadRow!]!
+  total: corrallm_SlotLoadRow!
+}
+
+type corrallm_SlotLoadRow {
+  """Slots in service right now."""
+  busy: Long!
+  """Served model name; empty on the box total."""
+  model: String!
+  """Admission slots: the scheduler's live capacity once the model has been admitted to, else the config's maxConcurrent (default 1)."""
+  slots: Long!
+  """scheduler | config — where slots came from. Empty on the box total."""
+  slotsSource: String!
+  """Requests queued for a slot right now."""
+  waiting: Long!
+  """One entry per rolling window, shortest first."""
+  windows: [corrallm_SlotLoadWindow!]!
+}
+
+type corrallm_SlotLoadWindow {
+  """Requests that ARRIVED in the window, answered, refused or still running."""
+  arrivals: Long!
+  """arrivals ÷ window minutes."""
+  arrivalsPerMin: Float!
+  """Mean slots busy over the window (slot-seconds held ÷ window seconds). A slot counts as held from the end of queue wait and cold load to the last byte — the span ServiceStats measures."""
+  busySlotsAvg: Float!
+  """Window length in minutes, ending now."""
+  minutes: Long!
+  """busySlotsAvg as a percent of the model's slots now (0–100; above 100 only if slots were lowered within the window)."""
+  occupancyPct: Float!
+  """Requests behind tokPerSecPerRequest."""
+  perRequestSamples: Long!
+  """Median queue wait of the window's arrivals, milliseconds; a request still queued counts its wait so far. Includes callers who timed out of the queue."""
+  queueWaitP50Ms: Long!
+  """90th-percentile queue wait of the window's arrivals, milliseconds."""
+  queueWaitP90Ms: Long!
+  """Arrivals that waited in the queue at all (wait > 0)."""
+  queued: Long!
+  """Mean backend-reported decode speed of the requests that finished in the window (tok/s per request). 0 when none reported one."""
+  tokPerSecPerRequest: Float!
+  """Completion tokens per second of wall-clock, summed across every request on this model (tok/s total). A finished request's tokens are placed on its decode span (end − tokens ÷ its reported decode rate); a running stream counts its chunks so far (≈ tokens) spread over its time streaming."""
+  tokPerSecTotal: Float!
 }
 
 type corrallm_SlowSpellView {

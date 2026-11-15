@@ -157,6 +157,41 @@ const LedgerDoc = graphql(/* GraphQL */ `
   }
 `)
 
+const SlotLoadDoc = graphql(/* GraphQL */ `
+  query DashboardSlotLoad {
+    corrallm {
+      slotLoad {
+        models {
+          ...SlotLoadRow
+        }
+        total {
+          ...SlotLoadRow
+        }
+      }
+    }
+  }
+  fragment SlotLoadRow on corrallm_SlotLoadRow {
+    model
+    slots
+    slotsSource
+    busy
+    waiting
+    windows {
+      minutes
+      tokPerSecTotal
+      tokPerSecPerRequest
+      perRequestSamples
+      busySlotsAvg
+      occupancyPct
+      arrivals
+      arrivalsPerMin
+      queued
+      queueWaitP50Ms
+      queueWaitP90Ms
+    }
+  }
+`)
+
 const spanMs = (w: TimeWindow) => (w.kind === 'absolute' ? w.toMS - w.fromMS : w.minutes * 60_000)
 
 // The bucket follows the span, so a one-hour window is not one bar.
@@ -173,6 +208,9 @@ function tokSum(n: number): ReactNode {
   const s = n >= 1e9 ? `${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(Math.round(n))
   return <span title={`${Math.round(n).toLocaleString()} tokens`}>{s}</span>
 }
+// One decimal under 100 so a quiet minute does not read as 0 tok/s.
+const tps1 = (n: number) => (n <= 0 ? '0 tok/s' : n < 100 ? `${n.toFixed(1)} tok/s` : `${Math.round(n).toLocaleString()} tok/s`)
+const secs = (ms: number) => `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`
 const toks = (n: number) => (n > 0 ? `${Math.round(n).toLocaleString()} tok` : '—')
 
 function fmtDur(sec: number): string {
@@ -360,7 +398,19 @@ function avgP(avg: number, p: number, n: number, f: (x: number) => string, tail 
   )
 }
 
-function MetricsTable({ rows, total, groupBy, onPick }: { rows: Row[]; total?: Row; groupBy: GroupBy; onPick: (r: Row) => void }) {
+function MetricsTable({
+  rows,
+  total,
+  groupBy,
+  windowSec,
+  onPick,
+}: {
+  rows: Row[]
+  total?: Row
+  groupBy: GroupBy
+  windowSec: number
+  onPick: (r: Row) => void
+}) {
   const body = (r: Row, isTotal: boolean) => (
     <TableRow
       key={isTotal ? '(total)' : `${r.key}\u0000${r.served}`}
@@ -375,7 +425,8 @@ function MetricsTable({ rows, total, groupBy, onPick }: { rows: Row[]; total?: R
       <Num muted={r.cacheReports === 0}>{r.cacheReports > 0 ? pct(r.cacheHitRate) : 'not reported'}</Num>
       <Num>{r.prefillN > 0 ? tps(r.prefillFusedTps) : '—'}</Num>
       <Num>{r.prefillN > 0 ? tps(r.prefillRawTps) : '—'}</Num>
-      <Num>{avgP(r.tgAvg, r.tgP10, r.tgN, tps, 'p10')}</Num>
+      <Num>{windowSec > 0 && r.completionTokens > 0 ? tps1(r.completionTokens / windowSec) : '—'}</Num>
+      <Num muted>{avgP(r.tgAvg, r.tgP10, r.tgN, tps, 'p10')}</Num>
       <Num>{avgP(r.turnsAvg, r.turnsP90, r.ctxSessions, (x) => x.toFixed(1))}</Num>
       <Num>{avgP(r.ctxRequestAvg, r.ctxRequestP90, r.ctxRequests, toks)}</Num>
       <Num>{avgP(r.ctxTailAvg, r.ctxTailP90, r.ctxSessions, toks)}</Num>
@@ -391,7 +442,16 @@ function MetricsTable({ rows, total, groupBy, onPick }: { rows: Row[]; total?: R
             <Head name="Cache hit" unit="% of prompt tokens" hint="Prompt tokens served from the KV cache instead of reprocessed, token-weighted. 'not reported' = the backend reports no cache; not a measured 0%." />
             <Head name="Prefill, fused" unit="tok/s" hint="Prompt tokens INCLUDING the cached prefix, per second of prefill: the rate a prompt was effectively read at." />
             <Head name="Prefill, raw" unit="tok/s" hint="New (uncached) prompt tokens per second of prefill: what the GPU actually processed." />
-            <Head name="Decode (tg)" unit="tok/s, mean · p10" hint="Generation speed per request. p10 is the slow tail, where a slowdown shows first." />
+            <Head
+              name="Output"
+              unit="tok/s total, window mean"
+              hint="Generated tokens (reasoning included) per second of the window, all requests together. With parallel slots this grows with the slots in use while the per-request speed beside it stays flat."
+            />
+            <Head
+              name="Decode, per request"
+              unit="tok/s per request, mean · p10"
+              hint="Generation speed of ONE request, as the backend reported it. p10 is the slow tail, where a slowdown shows first. Not the box's output: see Output."
+            />
             <Head name="Turns" unit="per session, mean · p90" hint="Served turns per conversation session." />
             <Head name="Request context" unit="tokens, mean · p90" hint="Context each request carried (prompt + completion at that turn), every turn counted." />
             <Head name="Final context" unit="tokens, mean · p90" hint="Context at each session's LAST turn: how big a conversation gets by the end." />
@@ -480,6 +540,147 @@ function CostTable({
         </TableBody>
       </Table>
     </TableContainer>
+  )
+}
+
+// ── Slot load: what the slots together are doing ───────────────────────────
+
+type SlotWindow = {
+  minutes: string
+  tokPerSecTotal: number
+  tokPerSecPerRequest: number
+  perRequestSamples: string
+  busySlotsAvg: number
+  occupancyPct: number
+  arrivals: string
+  arrivalsPerMin: number
+  queued: string
+  queueWaitP50Ms: string
+  queueWaitP90Ms: string
+}
+type SlotRow = { model: string; slots: string; slotsSource: string; busy: string; waiting: string; windows: SlotWindow[] }
+
+/** The short window's value, with the long one as a caption beside it. */
+function shortLong(r: SlotRow, f: (w: SlotWindow) => ReactNode) {
+  const [s, l] = [r.windows[0], r.windows[r.windows.length - 1]]
+  if (!s) return '—'
+  return (
+    <>
+      <Typography component="span" variant="caption" sx={{ color: C.textMuted, mr: 0.75 }}>
+        {s.minutes} min
+      </Typography>
+      {f(s)}
+      {l && l !== s && (
+        <Typography component="span" variant="caption" sx={{ color: C.textMuted, ml: 0.75 }}>
+          {l.minutes} min {f(l)}
+        </Typography>
+      )}
+    </>
+  )
+}
+
+/** The long window only, captioned with its length. */
+function longOnly(r: SlotRow, f: (w: SlotWindow) => ReactNode) {
+  const l = r.windows[r.windows.length - 1]
+  if (!l) return '—'
+  return (
+    <>
+      {f(l)}
+      <Typography component="span" variant="caption" sx={{ color: C.textMuted, ml: 0.75 }}>
+        {l.minutes} min
+      </Typography>
+    </>
+  )
+}
+
+/**
+ * SLOT LOAD — per-request tg/s stops describing the box once a model has more
+ * than one slot: three requests at ~78 tok/s each are ~234 tok/s of output, and
+ * the per-request number still reads 78. So this panel leads with the total, then
+ * how many slots are busy and how long arrivals wait for one. Its windows are
+ * fixed (last 1 and 15 minutes) and do not follow the window picker below.
+ */
+function SlotLoad() {
+  const q = useQuery({
+    queryKey: ['dashboardSlotLoad'],
+    queryFn: () => gqlClient.request(SlotLoadDoc),
+    refetchInterval: 10000,
+  })
+  const sl = q.data?.corrallm?.slotLoad
+  const models = (sl?.models ?? []) as SlotRow[]
+  const total = sl?.total as SlotRow | undefined
+  const row = (r: SlotRow, isTotal: boolean) => {
+    const busy = Number(r.busy)
+    const slots = Number(r.slots)
+    const waiting = Number(r.waiting)
+    return (
+      <TableRow
+        key={isTotal ? '(total)' : r.model}
+        sx={isTotal ? { '& td': { fontWeight: 600, borderTop: `2px solid ${C.border}` } } : undefined}
+      >
+        <TableCell sx={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {isTotal ? 'Box total' : r.model}
+        </TableCell>
+        <Num>
+          <Box component="span" sx={{ color: slots > 0 && busy >= slots ? C.warn : undefined }}>
+            {fmtInt(busy)} of {fmtInt(slots)} {slots === 1 ? 'slot' : 'slots'} busy
+          </Box>
+        </Num>
+        <Num muted={waiting === 0}>{`${fmtInt(waiting)} ${waiting === 1 ? 'request' : 'requests'} waiting`}</Num>
+        <Num>{shortLong(r, (w) => tps1(w.tokPerSecTotal))}</Num>
+        <Num muted>{longOnly(r, (w) => (Number(w.perRequestSamples) > 0 ? tps1(w.tokPerSecPerRequest) : '—'))}</Num>
+        <Num>{shortLong(r, (w) => `${Math.round(w.occupancyPct)}%`)}</Num>
+        <Num>{longOnly(r, (w) => `${w.arrivalsPerMin.toFixed(1)} req/min`)}</Num>
+        <Num muted={Number(r.windows[r.windows.length - 1]?.queued ?? 0) === 0}>
+          {longOnly(r, (w) =>
+            Number(w.arrivals) > 0 ? `${secs(Number(w.queueWaitP50Ms))} · ${secs(Number(w.queueWaitP90Ms))}` : '—',
+          )}
+        </Num>
+      </TableRow>
+    )
+  }
+  return (
+    <Panel
+      title="Slot load"
+      subtitle="Local models, now and over the last 1 and 15 minutes (fixed windows; the picker below does not change them)"
+      help="Output: generated tokens per second of wall-clock across every slot together (tok/s total); a running stream counts the tokens it has sent so far. Decode per request: the backend's own speed for one request (tok/s per request) — it stays flat as slots are added, which is why it is no longer the headline. Occupancy: mean busy slots over the window as a percent of the model's slots. Queue wait: time from arrival to a slot, over requests that arrived in the window, including any still queued."
+      flush
+    >
+      {q.isLoading ? (
+        <Typography variant="body2" sx={{ color: C.textMuted, p: 1.75 }}>
+          Loading…
+        </Typography>
+      ) : q.error ? (
+        <Typography variant="body2" sx={{ color: C.error, p: 1.75 }}>
+          Could not load: {String(q.error)}
+        </Typography>
+      ) : models.length === 0 ? (
+        <Typography variant="body2" sx={{ color: C.textMuted, p: 1.75 }}>
+          No local model is loaded or served anything in the last 15 minutes.
+        </Typography>
+      ) : (
+        <TableContainer>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Model</TableCell>
+                <Head name="Slots" unit="busy now, of total" hint="Admission slots in service now, of the model's slots (maxConcurrent)." />
+                <Head name="Queue" unit="requests waiting now" />
+                <Head name="Output" unit="tok/s total, 1 min · 15 min" hint="Generated tokens per second, all slots together." />
+                <Head name="Decode, per request" unit="tok/s per request, 15 min mean" hint="One request's generation speed as the backend reported it, averaged over requests finished in the last 15 minutes." />
+                <Head name="Occupancy" unit="% of slots busy, 1 min · 15 min" />
+                <Head name="Arrivals" unit="requests per minute, 15 min" />
+                <Head name="Queue wait" unit="seconds, p50 · p90, 15 min" />
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {models.map((r) => row(r, false))}
+              {total && models.length > 1 && row(total, true)}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      )}
+    </Panel>
   )
 }
 
@@ -713,6 +914,7 @@ export function Dashboard(props: {
 
   return (
     <>
+      <SlotLoad />
       <Controls
         window={window}
         split={split}
@@ -722,7 +924,7 @@ export function Dashboard(props: {
         onSplit={onSplit}
       />
       <Panel title="Metrics" subtitle={`Summed ${windowPhrase(window)}; click a row to filter to it`} flush>
-        {rows.length === 0 ? empty : <MetricsTable rows={rows} total={total} groupBy={split.groupBy} onPick={pick} />}
+        {rows.length === 0 ? empty : <MetricsTable rows={rows} total={total} groupBy={split.groupBy} windowSec={hours * 3600} onPick={pick} />}
       </Panel>
       <Panel title="Cost" subtitle={`Same rows, ${windowPhrase(window)}`} flush>
         {rows.length === 0 ? (
