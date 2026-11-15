@@ -1538,6 +1538,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 				code = 499
 			case errors.Is(err, context.DeadlineExceeded):
 				code = http.StatusGatewayTimeout
+			case !remote && backendRestarting(err, pr):
+				// Nothing of the reply reached the caller: the local backend
+				// is stopping or not listening. Retryable, not a fault.
+				writeBackendRestarting(rw, name, err)
+				return
 			}
 			rw.WriteHeader(code)
 		}
