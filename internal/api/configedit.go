@@ -507,6 +507,7 @@ func advancedFields(m config.Model) []string {
 	add(m.LoopDetection != nil, "loopDetection")
 	add(m.SlotAffinity, "slotAffinity")
 	add(m.SlotAwareDequeue || m.SlotAwareDequeueMaxSkips != 0 || m.SlotAwareDequeueMaxWait != "", "slotAwareDequeue")
+	add(m.KVPool != nil, "kvPool")
 	add(m.Swap != nil, "swap")
 	add(m.Sticky != nil && m.Sticky.KeepWarm, "sticky.keepWarm")
 	add(m.ContextPerRequest > 0, "contextPerRequest")

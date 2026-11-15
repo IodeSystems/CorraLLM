@@ -1205,6 +1205,18 @@ type Model struct {
 	// never passed over. "": DefaultSlotSkipWait.
 	SlotAwareDequeueMaxWait string `yaml:"slotAwareDequeueMaxWait,omitempty"`
 
+	// KVPool turns on KV-pool admission control (P75, 11-15). A llama-server
+	// with --kv-unified shares one KV pool across its --parallel slots, and
+	// any slot may grow to the whole pool. On a full pool llama-server clears
+	// idle slots, halves its batch down to 1, then fails EVERY request in the
+	// batch ("Context size has been exceeded.", HTTP 500) and clears their
+	// context. With kvPool set, corrallm sums the expected KV tokens of the
+	// requests in service on this model (estimated prompt + output reserve)
+	// and holds a request in the queue while that sum plus its own would pass
+	// kvPool.tokens. Nil: off. Matters only when slots × the per-slot cap
+	// (contextPerRequest, --kv-unified-per-slot) is more than the pool.
+	KVPool *KVPool `yaml:"kvPool,omitempty"`
+
 	// Aliases are ADDITIONAL served names that resolve to this model. They exist
 	// for version cutovers: a caller that hardcodes last quarter's model id keeps
 	// working while the id it names starts meaning the new model.
@@ -1578,6 +1590,61 @@ func (m Model) SlotSkipBound() (maxSkips int, maxWait time.Duration) {
 		maxWait = d
 	}
 	return maxSkips, maxWait
+}
+
+// KVPool is a model's KV-pool admission bound (Model.KVPool).
+type KVPool struct {
+	// Tokens is the shared KV pool in tokens: the cmd's -c/--ctx-size with
+	// --kv-unified. Required (> 0).
+	Tokens int `yaml:"tokens"`
+	// ReserveTokens is the output reserve each request is charged on top of
+	// its prompt: min(max_tokens when the request sends one, this). 0:
+	// DefaultKVReserveTokens.
+	ReserveTokens int `yaml:"reserveTokens,omitempty"`
+	// BypassFor is a Go duration: how long smaller requests may be admitted
+	// past a queued request the pool holds back. After that no other request
+	// is admitted until the held one fits. "": DefaultKVBypassFor.
+	BypassFor string `yaml:"bypassFor,omitempty"`
+}
+
+// Defaults for KV-pool admission (Model.KVPool).
+const (
+	DefaultKVReserveTokens = 4096
+	DefaultKVBypassFor     = 30 * time.Second
+)
+
+// Reserve is the output reserve, defaults applied.
+func (k KVPool) Reserve() int {
+	if k.ReserveTokens > 0 {
+		return k.ReserveTokens
+	}
+	return DefaultKVReserveTokens
+}
+
+// Bypass is the bypass window, defaults applied (Validate rejects bad ones).
+func (k KVPool) Bypass() time.Duration {
+	if d, err := time.ParseDuration(k.BypassFor); err == nil && d > 0 {
+		return d
+	}
+	return DefaultKVBypassFor
+}
+
+func (k KVPool) validate() error {
+	if k.Tokens <= 0 {
+		return fmt.Errorf("kvPool.tokens %d must be > 0 (the cmd's --ctx-size with --kv-unified)", k.Tokens)
+	}
+	if k.ReserveTokens < 0 {
+		return fmt.Errorf("kvPool.reserveTokens %d must be ≥ 0", k.ReserveTokens)
+	}
+	if k.ReserveTokens >= k.Tokens {
+		return fmt.Errorf("kvPool.reserveTokens %d must be < kvPool.tokens %d", k.ReserveTokens, k.Tokens)
+	}
+	if w := k.BypassFor; w != "" {
+		if d, err := time.ParseDuration(w); err != nil || d <= 0 {
+			return fmt.Errorf("kvPool.bypassFor %q must be a positive Go duration (e.g. 30s)", w)
+		}
+	}
+	return nil
 }
 
 // Slots returns the model's concurrency capacity, defaulting to 1.
@@ -3161,6 +3228,11 @@ func (c *Config) Validate() error {
 		if w := m.SlotAwareDequeueMaxWait; w != "" {
 			if d, err := time.ParseDuration(w); err != nil || d <= 0 {
 				return fmt.Errorf("model %q: slotAwareDequeueMaxWait %q must be a positive Go duration (e.g. 2s)", name, w)
+			}
+		}
+		if m.KVPool != nil {
+			if err := m.KVPool.validate(); err != nil {
+				return fmt.Errorf("model %q: %w", name, err)
 			}
 		}
 		if err := m.Sticky.validate(fmt.Sprintf("model %q", name)); err != nil {
