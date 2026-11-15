@@ -806,6 +806,12 @@ GPU/step; acceptance −6..−26 % multilingual, +2..7 % elsewhere; target distr
 ✅ Restart-stale-config bug fixed 508c164 (EnsureReady resolves the model from the current config; restart prints cmd hash);
 deployed v0.3.0-86-g508c164 by bin/deploy handoff 11-15 (Swift pid 728170 kept). Owner 11-15: write p8 (parallel per-slot
 target sampling, env LLAMA_PAR_SAMPLING, parked in scratchpad/p8/) + research the q8_0 FA KV-dequant cost (~9.4 ms/step).
+q8_0 FA research 11-15: kv_rows + unified KV forces the MMA kernel, which converts ALL of K/V over n_kv = used_max_p1 of the
+whole unified cache (all slots + holes, padded 256) per layer per step (fattn.cu:683-687, :798-802; fattn-common.cuh:1087-1146;
+llama-kv-cache.cpp:1312-1326). ~129.5k cells converted vs ~90k tokens held at 13:41; ~1.56 TB/s = bandwidth-bound; ~9.4 ms/step.
+No flag avoids it. Upstream PR #31802 (OPEN, unreviewed) fuses q8_0 dequant into MMA, kv_rows-aware, gated to head dim 256 +
+GQA > 4 (= this model), toggle GGML_CUDA_FATTN_MMA_FUSED; author reports decode +18 % @32k, +34 % @64k, +63 % @131k (sm_89).
+Does not apply cleanly (fattn-vec.cuh, fattn.cu); diff at scratchpad pr31802/pr.diff. **Owner decides:** carry it as a local patch.
 GAP: `corrallm tools build` from the CLI activates WITHOUT the benchmark gate (p6 and p7 both ungated); the gated path
 needs the daemon API + admin token (disabled). Owner decides: CLI `--gate` flag or accept.
 Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
