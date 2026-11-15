@@ -803,6 +803,9 @@ graphs median 0.91 ms (0.71 ms CPU with no CUDA call, unsplit — needs CPU samp
 Only ~3.6 of the 6.6 ms is in the draft loop; rest in process()/accept. Options: trimmed draft vocab PR #31031 (open; ~2.4 ms
 GPU/step; acceptance −6..−26 % multilingual, +2..7 % elsewhere; target distribution unchanged); unrolled 4-step draft graph
 ~2.5-3 ms, 500-1000 lines, high risk; input-copy fixes ~1 %. Next: profile the 0.71 ms with CPU sampling on the 3080.
+✅ Restart-stale-config bug fixed 508c164 (EnsureReady resolves the model from the current config; restart prints cmd hash);
+deployed v0.3.0-86-g508c164 by bin/deploy handoff 11-15 (Swift pid 728170 kept). Owner 11-15: write p8 (parallel per-slot
+target sampling, env LLAMA_PAR_SAMPLING, parked in scratchpad/p8/) + research the q8_0 FA KV-dequant cost (~9.4 ms/step).
 GAP: `corrallm tools build` from the CLI activates WITHOUT the benchmark gate (p6 and p7 both ungated); the gated path
 needs the daemon API + admin token (disabled). Owner decides: CLI `--gate` flag or accept.
 Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
