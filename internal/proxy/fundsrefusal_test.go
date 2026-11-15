@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iodesystems/corrallm/internal/config"
 	"github.com/iodesystems/corrallm/internal/store"
@@ -103,5 +105,45 @@ func TestFundsRefusalSpillsToNextCandidate(t *testing.T) {
 	}
 	if !refused {
 		t.Fatalf("rows = %+v, want a 402 funds row for a", rows)
+	}
+}
+
+// Anthropic's workspace spend cap is a funds refusal too, and the date it names
+// becomes error.retry_at and Retry-After.
+func TestAnthropicWorkspaceLimitIs402WithRetryAt(t *testing.T) {
+	treatAsRemote(t)
+	when := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Minute)
+	msg := "You have reached your specified workspace API usage limits. You will regain access on " +
+		when.Format("2006-01-02") + " at " + when.Format("15:04") + " UTC."
+	up := fakeUpstream(t, 400, `{"error":{"code":null,"message":"`+msg+`"}}`)
+	h, _ := refusalRig(t, map[string]config.Model{"fw": modelTo(t, up.URL, "chat")}, nil)
+	rec := post(h, "fw")
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d (%s), want 402", rec.Code, rec.Body)
+	}
+	var got struct {
+		Error struct {
+			Type    string `json:"type"`
+			RetryAt string `json:"retry_at"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body %q: %v", rec.Body, err)
+	}
+	if got.Error.Type != "upstream_funds_exhausted" || got.Error.RetryAt != when.Format(time.RFC3339) {
+		t.Errorf("error = %+v, want upstream_funds_exhausted retry_at %s", got.Error, when.Format(time.RFC3339))
+	}
+	ra, err := strconv.Atoi(rec.Header().Get("Retry-After"))
+	if err != nil || ra < 47*3600 || ra > 48*3600 {
+		t.Errorf("Retry-After = %q, want ~48 h in seconds", rec.Header().Get("Retry-After"))
+	}
+}
+
+func TestRegainAt(t *testing.T) {
+	if got := regainAt("x You will regain access on 2026-12-01 at 00:00 UTC."); !got.Equal(time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("regainAt = %v", got)
+	}
+	if got := regainAt("no date here"); !got.IsZero() {
+		t.Errorf("regainAt(no date) = %v, want zero", got)
 	}
 }

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // typeUpstreamFunds is error.type when a REMOTE upstream refuses because the
@@ -22,19 +24,40 @@ const fundsPeekLimit = 8 << 10
 // fundsMarkers are lower-case phrases that mark a billing refusal in a body.
 // OpenAI: insufficient_quota (code and type), billing_hard_limit_reached.
 // Anthropic: "Your credit balance is too low to access the Anthropic API"
-// (400 invalid_request_error). A plain rate limit carries none of these.
+// (400 invalid_request_error), and "You have reached your specified workspace
+// API usage limits. You will regain access on 2026-12-01 at 00:00 UTC." (400,
+// a workspace spend cap). A plain rate limit carries none of these.
 var fundsMarkers = []string{
 	"insufficient_quota",
 	"billing_hard_limit_reached",
 	"credit balance is too low",
 	"exceeded your current quota",
+	"workspace api usage limits",
+}
+
+// regainRE finds Anthropic's "regain access on YYYY-MM-DD at HH:MM UTC".
+var regainRE = regexp.MustCompile(`(?i)regain access on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2}) UTC`)
+
+// regainAt is the time an upstream says access returns, or zero when the
+// body names none.
+func regainAt(text string) time.Time {
+	m := regainRE.FindStringSubmatch(text)
+	if m == nil {
+		return time.Time{}
+	}
+	t, err := time.Parse("2006-01-02 15:04", m[1]+" "+m[2])
+	if err != nil {
+		return time.Time{}
+	}
+	return t.UTC()
 }
 
 // fundsRefusal is a classified upstream billing refusal.
 type fundsRefusal struct {
 	Provider string
-	Status   int    // the upstream's status
-	Upstream string // the upstream's own message
+	Status   int       // the upstream's status
+	Upstream string    // the upstream's own message
+	RetryAt  time.Time // when the upstream says access returns; zero = unknown
 }
 
 // Message is the plain-words text for the caller and the activity row.
@@ -81,17 +104,23 @@ func peekFunds(resp *http.Response, provider string) (fundsRefusal, bool) {
 	if !classifyFunds(resp.StatusCode, head) {
 		return fundsRefusal{}, false
 	}
-	return fundsRefusal{Provider: provider, Status: resp.StatusCode, Upstream: upstreamErrorText(head)}, true
+	text := upstreamErrorText(head)
+	return fundsRefusal{Provider: provider, Status: resp.StatusCode, Upstream: text, RetryAt: regainAt(text)}, true
 }
 
-// rewrite turns resp into the 402 the caller gets.
+// rewrite turns resp into the 402 the caller gets. When the upstream named a
+// time access returns, it becomes error.retry_at (RFC 3339) and Retry-After.
 func (f fundsRefusal) rewrite(resp *http.Response) {
-	body, _ := json.Marshal(map[string]any{"error": map[string]any{
+	e := map[string]any{
 		"message":         f.Message(),
 		"type":            typeUpstreamFunds,
 		"provider":        f.Provider,
 		"upstream_status": f.Status,
-	}})
+	}
+	if !f.RetryAt.IsZero() {
+		e["retry_at"] = f.RetryAt.Format(time.RFC3339)
+	}
+	body, _ := json.Marshal(map[string]any{"error": e})
 	if resp.Body != nil {
 		_ = resp.Body.Close()
 	}
@@ -103,6 +132,11 @@ func (f fundsRefusal) rewrite(resp *http.Response) {
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	resp.Header.Del("Content-Encoding")
 	resp.Header.Del("Retry-After")
+	if !f.RetryAt.IsZero() {
+		if secs := int(time.Until(f.RetryAt).Seconds()); secs > 0 {
+			resp.Header.Set("Retry-After", strconv.Itoa(secs))
+		}
+	}
 }
 
 // alertFunds tells the owner a paid upstream is out of funds, once per provider
