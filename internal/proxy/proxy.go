@@ -1249,7 +1249,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	queuedMS := handed.Milliseconds() // time blocked in admission control, the predecessor's included
 	var loadMS int64                  // time waiting for a backend to be spawned/resident
 
-	for wi, idx := range walk {
+	// kvRetried: this request was re-queued once after the backend's KV-full
+	// failure (kvpool.go); a second one goes to the caller.
+	kvRetried := false
+	for wi := 0; wi < len(walk); wi++ {
+		idx := walk[wi]
 		cand := cands[idx]
 		backend := cand.Model
 		name := cand.Name
@@ -1262,7 +1266,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// Slot-aware dequeue (sched/slotpref.go): nil unless slotAffinity or
 		// slotAwareDequeue.
 		slotHint := p.slotHint(r, backend)
-		release, reqCtx, err := p.admit(sched.WithSlotHint(p.admitCtx(ctx, r, key), slotHint), name, backend, groupName, weight, group.Interruptible || retryable, stage)
+		// KV-pool admission (sched/kvpool.go): nil unless kvPool.
+		kvAsk := p.kvAsk(r, backend, body)
+		release, reqCtx, err := p.admit(sched.WithKVAsk(sched.WithSlotHint(p.admitCtx(ctx, r, key), slotHint), kvAsk), name, backend, groupName, weight, group.Interruptible || retryable, stage)
 		queuedMS += time.Since(admitStart).Milliseconds() // ~0 unless this stage queued
 		if errors.Is(err, sched.ErrDraining) {
 			if p.handOver(w, r, arrivedCT, arrivedBody, time.Since(start)) {
@@ -1391,6 +1397,12 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		c := &chainCtx{p: p, w: w, r: r, caller: caller, served: served, body: candBody, guards: guards,
 			name: name, backend: backend, pr: pr, candBody: candBody, streaming: streaming, image: image, segment: segment, audio: audio,
 			sttReq: sttReq, sttJoin: sttJoin, live: live, cancelReq: cancelReq}
+		if kvAsk != nil && kvAsk.Held.Load() {
+			c.notes = append(c.notes, fmt.Sprintf("kv-pool-held need=%d pool=%d", kvAsk.Tokens, kvAsk.Pool))
+		}
+		if kvRetried {
+			c.notes = append(c.notes, "kv-full-retried")
+		}
 		if _, refused := runBody(bodyStages, c, false); refused != nil {
 			// The deferred release()/done() free the slot and the ref.
 			refused.write(w)
@@ -1445,6 +1457,11 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		var upHeaders http.Header // the upstream's own headers, before ours are added
 		rp.ModifyResponse = func(resp *http.Response) error {
 			upHeaders = resp.Header.Clone()
+			// The local backend's KV pool ran out (kvpool.go): nothing has
+			// reached the caller, so re-queue once.
+			if !remote && !kvRetried && peekKVFull(resp) {
+				return errKVFull
+			}
 			// Timing breakdown, so a caller can recover EXECUTION time from its
 			// own wall clock. A benchmark measuring a busy box otherwise reports
 			// scheduler queueing and cold loads as if the model were slow — the
@@ -1529,8 +1546,8 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		var proxyErr error
 		rp.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, err error) {
 			proxyErr = err
-			if errors.Is(err, errBackendDown) {
-				return // spill: write nothing, the walk loop retries the next candidate
+			if errors.Is(err, errBackendDown) || errors.Is(err, errKVFull) {
+				return // spill or KV retry: write nothing, the walk loop moves on
 			}
 			code := http.StatusBadGateway
 			switch {
@@ -1607,6 +1624,19 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		done()
+		// KV-full retry: the backend failed the batch for lack of KV before
+		// any byte reached the caller. Back into the queue, same backend,
+		// once; the admission's KV count now sees what else is in service.
+		if errors.Is(proxyErr, errKVFull) && !sc.wroteHeader {
+			release()
+			kvRetried = true
+			slog.Warn("backend KV cache full, re-queueing once", "backend", name, "error", kvFullText,
+				"kv_need", kvNeed(kvAsk), "key", key)
+			p.dropRowMarker(takeMarker())
+			p.markInflight(live, inflightQueued, "")
+			wi-- // the same candidate again
+			continue
+		}
 		// Hard-fail spill: the response was aborted before anything reached the
 		// client (wroteHeader guards that), so free the slot and try the next
 		// candidate — a free-only lane with one broken key still serves from

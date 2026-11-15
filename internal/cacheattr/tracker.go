@@ -357,6 +357,23 @@ func (t *Tracker) Last(conv string, nowMS int64) (slot int, instance string) {
 	return s.slot, s.instance
 }
 
+// LastContext is the context of conversation conv's previous turn (prompt +
+// completion tokens), for KV-pool admission: a next turn's prompt is at
+// least about that long. 0 when unknown.
+func (t *Tracker) LastContext(conv string, nowMS int64) int {
+	if t == nil || conv == "" {
+		return 0
+	}
+	sh := t.shardOf(conv)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	s := sh.m[conv]
+	if s == nil || nowMS-s.ts > stubTTL.Milliseconds() {
+		return 0
+	}
+	return s.ctxTok
+}
+
 // Len is the number of conversations held, for tests and the report.
 func (t *Tracker) Len() int {
 	n := 0

@@ -302,6 +302,9 @@ func (s *Scheduler) Admit(ctx context.Context, backend, backendType string, capa
 	// A provider gate is a second slot for a request the model already
 	// admitted; its budgets were checked and charged there.
 	gate := isGate(backend)
+	if gate {
+		sl.kv = nil // the model's admission counted it; a gate is not a KV pool
+	}
 	if over, retry := s.overBudgetLocked(now, group, backendType); over && !gate {
 		if spills(stage) {
 			be := bs.backpressure("spill")
