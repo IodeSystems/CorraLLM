@@ -526,7 +526,12 @@ retryable. Swift reloaded during the handoff (pid 3494216 → 3500344), yet 55 S
 completed 12/12, dense 20.6 MB + transforms downloaded. Swift untouched, 0 5xx. Follow-ups: (a) dense lease over-declared
 (PatchMatch used 1,698-1,996 MiB at 3072 px vs 4,718 leased) → shrink so chandra fits beside it; (b) re-grant evicted
 nomic as well as chandra (no pruning of unneeded victims) — owner call; (c) D7 untested (no test hook); (d) job log
-prints retry_after=0s (text only).
+prints retry_after=0s (text only). ✅ ALL 4 DONE (owner "Do all 4"): 3c9a631 per-job lease sizing from measured fits ×1.2 (dense
+3072 px/12 img 4,718 → 2,560 MiB; match fixed 1,792; extract was UNDER-declared, now 176 + 802·Mpx → 7,040 @3072; runner
+logs gpu_peak_mib; each fit has 2 data points), ee09515 pruneVictimsLocked (manager.go:2124; reverse pass drops unneeded
+victims, also on lease grants), 042d7c7 COLMAP_SVC_TEST_IGNORE_YIELD test hook + TestIgnoredYieldStopThenResume (3/3),
+182e0fb Retry-After text. Deployed v0.3.0-57-g042d7c7 + `make ext-install EXT=colmap`; colmap-svc (no jobs) restarted onto
+the new binary, respawned on the next request.
 **next:** owner go → install, COLMAP_LEASE_TOKEN in ~/.corrallm/credentials, merge block, corrallm RESTART (routes mount at
 boot; evicts resident models incl. Swift) → T1a/T1b against the real lease manager. **open:** Poisson depth default (43 min
 for 30 images); dense VRAM at 3200 px unmeasured.
