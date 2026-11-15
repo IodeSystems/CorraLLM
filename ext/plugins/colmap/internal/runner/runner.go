@@ -55,7 +55,14 @@ type Config struct {
 	// Record.GPUPeakMiB, to tune the estimate. nil = not sampled.
 	VRAM      VRAMFunc
 	VRAMEvery time.Duration
+	// IgnoreYield is a TEST-ONLY hook (COLMAP_SVC_TEST_IGNORE_YIELD=1): yield
+	// requests are logged and not obeyed, so corrallm's D7 path (stop the
+	// service after yieldGrace) can be exercised. Never set in production.
+	IgnoreYield bool
 }
+
+// IgnoreYieldEnv turns on Config.IgnoreYield. Test only.
+const IgnoreYieldEnv = "COLMAP_SVC_TEST_IGNORE_YIELD"
 
 // DefaultUsage is the per-step lease table. The GPU steps' gpuPool size is
 // not in it: GPUEstimate sizes it per job from the images (vram.go).
@@ -212,6 +219,14 @@ func New(cfg Config, js *jobs.Store, fs *files.Store) *Runner {
 	}
 	if cfg.VRAMEvery <= 0 {
 		cfg.VRAMEvery = 2 * time.Second
+	}
+	if os.Getenv(IgnoreYieldEnv) == "1" {
+		cfg.IgnoreYield = true
+	}
+	if cfg.IgnoreYield {
+		for range 3 {
+			slog.Error("TEST HOOK " + IgnoreYieldEnv + "=1: GPU yield requests are IGNORED; corrallm will stop this service after yieldGrace. Test use only — unset it in production.")
+		}
 	}
 	return &Runner{cfg: cfg, Jobs: js, Files: fs, wake: make(chan struct{}, 1)}
 }
@@ -603,7 +618,11 @@ func (j *job) run(ctx context.Context, step string, argv []string, parse func(st
 		}
 		fmt.Fprintf(j.log, "=== lease %s granted for %s\n", held.ID(), step)
 		j.setWaiting(false)
-		out, err := runOnce(ctx, argv, j.r.cfg.Env, j.ws, j.log, onLine, held.Yield(), j.r.cfg.StopGrace, j.r.cfg.YieldKill, peak)
+		yield := held.Yield()
+		if j.r.cfg.IgnoreYield {
+			yield = j.ignoreYields(yield)
+		}
+		out, err := runOnce(ctx, argv, j.r.cfg.Env, j.ws, j.log, onLine, yield, j.r.cfg.StopGrace, j.r.cfg.YieldKill, peak)
 		held.Release()
 		if out == yielded {
 			fmt.Fprintf(j.log, "=== yielded %s (child: %s); resuming when the lease is granted again\n", step, exitDetail(err))
@@ -662,6 +681,19 @@ func (j *job) recordPeak(step string, p *peakSampler, leased string) {
 		x.GPUPeakMiB[step] = max(x.GPUPeakMiB[step], v)
 		return nil
 	})
+}
+
+// ignoreYields is the IgnoreYield test hook: it logs each yield request and
+// passes none on.
+func (j *job) ignoreYields(in <-chan lease.Yield) <-chan lease.Yield {
+	go func() {
+		if y, ok := <-in; ok {
+			_, _ = fmt.Fprintf(j.log, "=== TEST HOOK %s: ignoring the yield request (wanted by %s, deadline %s)\n",
+				IgnoreYieldEnv, y.WantedBy, y.Deadline.Format(time.RFC3339))
+			slog.Warn("TEST HOOK: yield request ignored", "job", j.rec.ID, "wanted_by", y.WantedBy)
+		}
+	}()
+	return nil
 }
 
 func (j *job) result(ctx context.Context, step string, out outcome, err error) error {

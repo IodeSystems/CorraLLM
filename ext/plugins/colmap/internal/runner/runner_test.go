@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -440,6 +441,74 @@ func TestRestartResumesFromDisk(t *testing.T) {
 	}
 	if !resumed {
 		t.Fatalf("mapper did not resume from the partial model: %v", e.argv("mapper"))
+	}
+}
+
+// D7 with the COLMAP_SVC_TEST_IGNORE_YIELD hook: the runner ignores a
+// yield, so after yieldGrace "corrallm" stops the service (the runner's
+// context ends as on SIGTERM; the fake forgets the extension's leases). The
+// restarted service resumes the job from disk and completes it without
+// redoing finished pairs.
+func TestIgnoredYieldStopThenResume(t *testing.T) {
+	t.Setenv(runner.IgnoreYieldEnv, "1")
+	e := newEnv(t)
+	srv := leasetest.New("tok")
+	defer srv.Close()
+	e.lease = &lease.Client{Base: srv.URL, Token: "tok"}
+	e.delay = "60ms"
+	const grace = 400 * time.Millisecond
+	asked := make(chan string, 1)
+	var once sync.Once
+	srv.OnGrant = func(id, stage string) {
+		if stage != "match" {
+			return
+		}
+		once.Do(func() {
+			go func() {
+				time.Sleep(300 * time.Millisecond)
+				srv.RequestYield("match", grace)
+				asked <- id
+			}()
+		})
+	}
+	e.job("recon_i", 7, img, nil, nil) // 21 pairs × 60 ms
+	r := e.runner()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.Run(ctx); close(done) }()
+	id := <-asked
+	time.Sleep(grace)
+	if !slices.Contains(srv.Held(), id) {
+		t.Fatalf("lease %s released within yieldGrace: the hook did not ignore the yield (held %v)", id, srv.Held())
+	}
+	cancel() // yieldGrace passed: corrallm stops the service…
+	<-done
+	srv.Forget() // …and ends its leases
+	rec, _ := e.jobs.Load("recon_i")
+	if n := len(e.units("match")); rec.Status != jobs.InProgress || rec.IsDone(runner.StepMatch) || n == 0 || n >= 21 {
+		t.Fatalf("after the stop: %s done %v, %d pairs", rec.Status, rec.Done, n)
+	}
+	b, _ := os.ReadFile(filepath.Join(e.dir, "jobs", "recon_i", "colmap.log"))
+	if !strings.Contains(string(b), "TEST HOOK "+runner.IgnoreYieldEnv) || strings.Contains(string(b), "=== yielded") {
+		t.Fatalf("job log does not show an ignored yield:\n%s", b)
+	}
+
+	t.Setenv(runner.IgnoreYieldEnv, "")
+	rec = e.runUntil(e.runner(), "recon_i", 30*time.Second)
+	if rec.Status != jobs.Completed || rec.Yields != 0 {
+		t.Fatalf("after restart: %s yields %d %+v", rec.Status, rec.Yields, rec.Error)
+	}
+	pairs := e.units("match")
+	if len(pairs) != 21 {
+		t.Fatalf("%d pairs, want 21", len(pairs))
+	}
+	for p, n := range pairs {
+		if n != 1 {
+			t.Fatalf("pair %s matched %d times", p, n)
+		}
+	}
+	if len(e.argv("exhaustive_matcher")) != 2 {
+		t.Fatalf("matcher runs %d, want 2 (stopped + resumed)", len(e.argv("exhaustive_matcher")))
 	}
 }
 

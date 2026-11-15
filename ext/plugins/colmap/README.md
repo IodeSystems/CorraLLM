@@ -42,6 +42,9 @@ with COLMAP's own reader.
   a graceful stop that keeps finished images/pairs/views; exit 143), SIGKILLs at deadline − 10 s, DELETEs the
   lease, re-acquires (429 → sleep Retry-After, `waiting_for_gpu: true`) and reruns the same command, which
   skips finished work.
+- Test hook `COLMAP_SVC_TEST_IGNORE_YIELD=1` (TEST ONLY): the runner logs yield requests and does not obey
+  them, so corrallm's D7 stop can be exercised. It logs an error three times at startup. Never set it in the
+  extension's `cmd`.
 - Restart (D7): finished steps are recorded in the job. On start the service resumes `in_progress` jobs at the
   step that was running. A gracefully stopped `mapper` writes its partial model; the next run continues it
   with `--input_path`. `global_mapper` is not resumable and restarts.
