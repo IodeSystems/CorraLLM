@@ -4057,3 +4057,9 @@ Still open, owner decides (unscheduled): (1) after a backend dies, corrallm prox
 port for ~5 s (502 connection refused) instead of holding requests for the respawn. Fix = mark
 the backend not-ready on exit. (2) llama.cpp rebuild-on-master every 6 h: each one wipes Swift's
 prompt cache.
+
+## 2026-11-14 — embed model resident (config only)
+local-nomic-embed-text: removed `sticky.idleUnload: 5m` (DB config, `corrallm config load` + reload 20:59).
+Cause: 53 of 55 terminations today were idle unloads; 2 were capacity evictions for chandra-ocr-2.
+It is still evictable and restartable. Reload after an eviction is lazy (on the next request).
+A proactive `keepWarm` respawn does not exist; it needs new code, and the owner decides.
