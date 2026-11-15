@@ -765,7 +765,14 @@ P3b 180k (owner go): LIVE 11:52:27-12:03:42, ROLLED BACK 12:05:06 (decode p50 53
 hour before: decode p50 53.0 vs 76.9, total completion 101.3 vs 98.4 tok/s (+3 %), queue wait p50 4.4 vs 12.9 s, TTFT-after-queue
 1.6 vs 1.2 s. Read: total output is ~100 tok/s whatever the slot count → decode is GPU-saturated at 2 slots; my "2nd slot costs
 5 %" reading did not hold. Restore cmd + cfg-p3b.yaml in scratchpad. kvPool admission (e4914c8..b6a8be3) + dashboard slotLoad
-(6479a84, acd1d7e) committed, NOT deployed; kvPool is a no-op at 2 slots (2 × 86k = 172k).
+(6479a84, acd1d7e) committed; kvPool is a no-op at 2 slots (2 × 86k = 172k).
+◐ P3c 6 h TEST (owner 11-15): deployed v0.3.0-81-gadc3b00 by handoff 12:20 (Swift pid kept; UI rebuilt). Swift 3 slots,
+-c 180224, --no-mmproj-offload, maxConcurrent 3, kvPool {tokens 180224, reserveTokens 8192}; restarted 12:22:12 (0 cut).
+VRAM 31,798-31,812 MiB. Readout: scratchpad p3c_readout.sh "<start>" "<end>" [cmp]; checks scheduled 13:27 and 18:27.
+Rollback triggers: CUDA OOM, VRAM > 32,088, > 2 context-exceeded failures/h to clients, repeated crashes. Rollback:
+config load --force scratchpad/cfg-p3c.pre.yaml + reload + backend restart --drain 2m.
+Open: slotLoad + groups API answer 401 "admin token required" to curl (admin token disabled) — dashboard panel unverified
+in a signed-in browser. aw4 reasoning cap (budget 2500) held on aw4 issue i_1m7ge0tfm0ff74p33g6bgt; may land mid-test.
 GAP: `corrallm tools build` from the CLI activates WITHOUT the benchmark gate (p6 and p7 both ungated); the gated path
 needs the daemon API + admin token (disabled). Owner decides: CLI `--gate` flag or accept.
 Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
