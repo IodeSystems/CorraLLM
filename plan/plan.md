@@ -742,6 +742,11 @@ first-user-message (system-prefix) checkpoint in every entry (+ optional message
 **blocking decision:** owner go for p7 canary.
 Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
 entry → recheck the knee after p7.
+11-15 BOTTOM LINE (agent, 7 d, 68.6k Swift req, 324M prompt tok/day, hit 90.2 %; scratchpad bottomline.json, cf_*.py):
+prefill GPU-h/day: no cache 44.8 (box max ~5.2k req/day vs 9.8k served), slot KV only ≥28.9, current 4.94 (+0.50 swap),
++p7 4.61. Decode = 83 % of slot time; occupancy 77 % week, 101 % peak hour → decode is the limit now. Slot-aware dequeue:
+no measured token gain (lost tok/req 505 → 653). Cold prefill rate: 2,290 tok/s @8k, 2,070 @32k, 1,790 @64k.
+Cloud equivalent $/day with vs without cache: Fireworks deepseek-flash 20.9 / 106.9; Sonnet-equivalent 202 / 729.
 
 Owner approved all three steps 11-10. Swift live: `--parallel 2 --kv-unified -c 172032
 --cache-ram 18432 --ctx-checkpoints 8 --slot-prompt-similarity 0.9`, build a4d4f2fd4 + 0002-0004.
