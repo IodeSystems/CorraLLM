@@ -744,7 +744,14 @@ Pins the first-user-message checkpoint; env LLAMA_PREFIX_CKPT=1 (off by default)
 cache may COPY (not move) an entry for its pinned prefix; metrics llamacpp:prefix_ckpt_*. CPU tests: same-system new
 conversation 0 → 337 of 353 tok cached; pytest 82 pass / 9 fail identical to p1..p6 base. Untested: CUDA, 27B, 2 slots, with p6.
 Risk: the copy path restores a long entry's full state then truncates (host→GPU bytes unmeasured).
-**blocking decision:** owner go for p7 canary (copy to patches/ → gated build → LLAMA_PREFIX_CKPT=1 in Swift cmd).
+✅ p7 CANARY LIVE 11-15 10:55:51 PST (owner "Go"): build 20261115-185132-b1b770d9 (p1..p7, patch-set 85b8430ad1b5),
+Swift cmd + `export LLAMA_PREFIX_CKPT=1`, restarted via backend restart --drain (0 cut). 5-min: decode p50 79.6 tok/s (76.8
+base), 0 5xx, 0 crashes; prefix_ckpt restores 4 / 78.5k tok. Rollback: `corrallm tools activate llama.cpp
+20261114-215547-b1b770d9 --server box1` + config from scratchpad cfg-p7.pre.yaml + reload + backend restart --drain.
+1 h readout baseline (07:49-10:49): turn-1 hit 45.6 % (78 req), forced full re-processing ~16/h, swap p50/p90 297/501 ms.
+Script: scratchpad p7check.sh. **next:** 1 h readout ~11:56.
+GAP: `corrallm tools build` from the CLI activates WITHOUT the benchmark gate (p6 and p7 both ungated); the gated path
+needs the daemon API + admin token (disabled). Owner decides: CLI `--gate` flag or accept.
 Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
 entry → recheck the knee after p7.
 11-15 BOTTOM LINE (agent, 7 d, 68.6k Swift req, 324M prompt tok/day, hit 90.2 %; scratchpad bottomline.json, cf_*.py):
