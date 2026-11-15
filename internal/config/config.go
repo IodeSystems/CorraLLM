@@ -2317,6 +2317,35 @@ type Sticky struct {
 	// honoured with a warning: the backend unloads before the eviction ordering
 	// ever consults its TTL, which makes the TTL moot rather than wrong.
 	IdleUnload string `yaml:"idleUnload,omitempty"`
+
+	// KeepWarm keeps the model resident but kickable. It is NOT persistent:
+	// the model is still an eviction victim under capacity pressure, and
+	// `corrallm backend restart` and an explicit unload still work. What it
+	// adds is the way back: when the backend is down (evicted, crashed, failed
+	// to start), corrallm starts it again as soon as it fits in the FREE
+	// capacity of its server, without evicting anything, instead of waiting
+	// for the next request to pay the cold load. Boot preloads it the same way.
+	//
+	// An explicit unload (API, `corrallm unload`, unload-all) stops the
+	// respawns until a request loads the model again or the config reloads.
+	// Eviction and crashes do not; crashes back off exponentially.
+	//
+	// Exclusive with IdleUnload (Validate refuses both): one says "unload when
+	// quiet", the other "come back when down", and together they would unload
+	// and respawn the model every idle period.
+	KeepWarm bool `yaml:"keepWarm,omitempty"`
+}
+
+// validate checks the combinations a sticky block must not have. where names
+// the owner for the message ("model \"x\"").
+func (s *Sticky) validate(where string) error {
+	if s == nil {
+		return nil
+	}
+	if s.KeepWarm && s.IdleUnload != "" {
+		return fmt.Errorf("%s: sticky.keepWarm and sticky.idleUnload are exclusive (keepWarm respawns what idleUnload unloads); set one", where)
+	}
+	return nil
 }
 
 // MaxQuality returns the highest Quality among the candidates (0 if none/unset)
@@ -2769,6 +2798,9 @@ func (c *Config) resolveExtensions() error {
 				return fmt.Errorf("extension %q: server/ramUsage/swap/persistent/sticky need a cmd (they describe a local process)", name)
 			}
 		}
+		if err := ext.Sticky.validate(fmt.Sprintf("extension %q", name)); err != nil {
+			return err
+		}
 		if _, clash := c.Models[name]; clash {
 			return fmt.Errorf("extension %q: name collides with a model", name)
 		}
@@ -3131,6 +3163,9 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("model %q: slotAwareDequeueMaxWait %q must be a positive Go duration (e.g. 2s)", name, w)
 			}
 		}
+		if err := m.Sticky.validate(fmt.Sprintf("model %q", name)); err != nil {
+			return err
+		}
 		if m.Cmd == "" {
 			// A pure proxy model has no local lifecycle: residency knobs are
 			// meaningless on it and almost certainly a config mistake.
@@ -3227,6 +3262,12 @@ func (c *Config) Validate() error {
 			}
 			if mem.Model == "" {
 				return fmt.Errorf("lane %q member %d: needs a model name or a provider selector", name, i)
+			}
+			// keepWarm is about the model being down, not about how a lane
+			// loaded it: the respawn reads the model's own sticky. On a member
+			// override it would say something nothing acts on.
+			if mem.Sticky != nil && mem.Sticky.KeepWarm {
+				return fmt.Errorf("lane %q member %d: sticky.keepWarm belongs on the model %q, not on a lane member", name, i, mem.Model)
 			}
 			if _, ok := c.Models[mem.Model]; !ok {
 				return fmt.Errorf("lane %q member %d: unknown model %q", name, i, mem.Model)

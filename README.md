@@ -24,6 +24,9 @@ It runs in production today, fronting a mixed embeddings and chat workload.
   it fits every pool. When it doesn't, idle unpinned residents are evicted to make
   room (ttl-expired first, then by `evictCost`, then least-recently-used) before
   spilling elsewhere. `persistent` models stay pinned and preloaded.
+  `sticky: { keepWarm: true }` models stay evictable but come back on their own:
+  when one is down, corrallm restarts it as soon as it fits in free capacity,
+  never evicting for it (see `corrallm.yaml`).
 - **Fairshare scheduling** — each API key maps to a priority group with a weight,
   a share currency, interruptibility, and a per-backend saturation policy.
   Requests are admitted by weighted fairshare over each backend's slots. When a

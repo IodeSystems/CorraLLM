@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -266,5 +267,23 @@ func TestRemovedBackendRaisesNothing(t *testing.T) {
 	}
 	if !sawLive {
 		t.Error("the live refusing backend was dropped too")
+	}
+}
+
+// sticky.keepWarm is not on the form. A form save must carry it over — with
+// the other sticky fields edited, and with all of them cleared — and the form
+// must say the model has it.
+func TestApplySpecKeepsStickyKeepWarm(t *testing.T) {
+	prev := config.Model{Cmd: "x", Sticky: &config.Sticky{TTL: "5m", KeepWarm: true}}
+	edited := applySpec(prev, config.Model{Cmd: "x", Sticky: &config.Sticky{TTL: "10m"}})
+	if edited.Sticky == nil || !edited.Sticky.KeepWarm || edited.Sticky.TTL != "10m" {
+		t.Errorf("edited sticky = %+v, want ttl 10m + keepWarm", edited.Sticky)
+	}
+	cleared := applySpec(prev, config.Model{Cmd: "x"})
+	if cleared.Sticky == nil || !cleared.Sticky.KeepWarm || cleared.Sticky.TTL != "" {
+		t.Errorf("cleared sticky = %+v, want keepWarm only", cleared.Sticky)
+	}
+	if !slices.Contains(advancedFields(prev), "sticky.keepWarm") {
+		t.Errorf("advancedFields = %v, want sticky.keepWarm listed", advancedFields(prev))
 	}
 }

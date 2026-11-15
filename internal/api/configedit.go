@@ -369,10 +369,20 @@ func applySpec(prev, next config.Model) config.Model {
 	// the form declined to model it — so drop it rather than leaving a stale
 	// one behind. Anything set rebuilds it wholesale, which is safe because the
 	// form always sends all three.
+	//
+	// keepWarm is the exception: the form does not model it (it is listed in
+	// advancedFields), so it is carried over from prev rather than dropped.
+	keepWarm := prev.Sticky != nil && prev.Sticky.KeepWarm
 	if next.Sticky == nil {
 		prev.Sticky = nil
 	} else {
 		prev.Sticky = next.Sticky
+	}
+	if keepWarm {
+		if prev.Sticky == nil {
+			prev.Sticky = &config.Sticky{}
+		}
+		prev.Sticky.KeepWarm = true
 	}
 	return prev
 }
@@ -498,6 +508,7 @@ func advancedFields(m config.Model) []string {
 	add(m.SlotAffinity, "slotAffinity")
 	add(m.SlotAwareDequeue || m.SlotAwareDequeueMaxSkips != 0 || m.SlotAwareDequeueMaxWait != "", "slotAwareDequeue")
 	add(m.Swap != nil, "swap")
+	add(m.Sticky != nil && m.Sticky.KeepWarm, "sticky.keepWarm")
 	add(m.ContextPerRequest > 0, "contextPerRequest")
 	add(len(m.Modalities) > 0, "modalities")
 	add(m.Convert != nil, "convert")

@@ -2,6 +2,7 @@ package config
 
 import (
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 	"path/filepath"
@@ -335,5 +336,34 @@ func TestTemplateLane(t *testing.T) {
 	}
 	if _, ok := c.ResolveServed("gpt-4"); ok {
 		t.Error("a name no pattern matches resolved")
+	}
+}
+
+// TestValidateStickyKeepWarm: keepWarm and idleUnload are exclusive (one
+// respawns what the other unloads), and keepWarm is a model property, not a
+// lane-member override.
+func TestValidateStickyKeepWarm(t *testing.T) {
+	base := func(st *Sticky) *Config {
+		return &Config{
+			Servers: map[string]Server{"box": {Pools: map[string]string{"gpu": "10GB"}}},
+			Models:  map[string]Model{"m": {Cmd: "exec sleep 1", Server: "box", Proxy: portNode(1234), Sticky: st}},
+			Lanes:   map[string]Lane{"l": {Members: []LaneMember{{Model: "m"}}}},
+		}
+	}
+	if err := base(&Sticky{KeepWarm: true, TTL: "5m"}).Validate(); err != nil {
+		t.Fatalf("keepWarm alone rejected: %v", err)
+	}
+	if err := base(&Sticky{KeepWarm: true, IdleUnload: "5m"}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "exclusive") {
+		t.Errorf("keepWarm + idleUnload: err = %v, want exclusive", err)
+	}
+	c := base(nil)
+	c.Lanes["l"] = Lane{Members: []LaneMember{{Model: "m", Sticky: &Sticky{KeepWarm: true}}}}
+	if err := c.Validate(); err == nil {
+		t.Error("keepWarm on a lane member must fail validation")
+	}
+	var st Sticky
+	if err := yamlUnmarshal(`{ttl: 5m, keepWarm: true}`, &st); err != nil || !st.KeepWarm {
+		t.Errorf("yaml keepWarm: %+v, %v", st, err)
 	}
 }

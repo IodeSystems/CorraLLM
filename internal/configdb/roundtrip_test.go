@@ -397,3 +397,23 @@ func TestSlotAffinityRoundTrips(t *testing.T) {
 		t.Fatalf("slotAffinity after read: %+v", m)
 	}
 }
+
+// sticky.keepWarm is carried in the model's sticky JSON column.
+func TestStickyKeepWarmRoundTrips(t *testing.T) {
+	db := openDB(t)
+	ctx := context.Background()
+	in := &config.Config{Providers: map[string]config.LocalProvider{"local": {Models: map[string]config.Model{
+		"local-warm": {Cmd: "llama-server", Server: "box1", Sticky: &config.Sticky{TTL: "5m", KeepWarm: true}},
+	}}}}
+	if err := Write(ctx, db, in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Read(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := out.Providers["local"].Models["local-warm"].Sticky
+	if st == nil || !st.KeepWarm || st.TTL != "5m" {
+		t.Fatalf("sticky after read: %+v", st)
+	}
+}
