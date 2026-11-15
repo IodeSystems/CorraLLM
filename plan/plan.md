@@ -760,7 +760,12 @@ is allocated lazily on the FIRST request, after load). Load left ~275 MiB free. 
 compute 1,023 (+82), MTP draft KV 736 + compute 255. My budget missed draft-KV growth and compute growth.
 Facts: Swift already has `--kv-unified-per-slot 86016` + contextPerRequest 86016 → 2 × 86k = 172k never spills; 3 slots can.
 Estimated 3-slot fit (steady, vs today's 31,836): -c 172032 ≈ 31,57x; -c 180224 ≈ 31,87x. Config backups: scratchpad cfg-p3*.yaml.
-**next:** owner picks 3 slots @172k (or 180k), ideally tested on a private port first; kvPool admission (building) guards spill.
+P3b 180k (owner go): LIVE 11:52:27-12:03:42, ROLLED BACK 12:05:06 (decode p50 53.0 tok/s < 60 floor). No OOM (VRAM 31,822 of
+32,088 limit; KV 5,984, RS 2,244, compute 983, draft 704+247 MiB); 0 KV-full; 3 slots busy 593 of 628 s. 10 min, 76 req vs 2-slot
+hour before: decode p50 53.0 vs 76.9, total completion 101.3 vs 98.4 tok/s (+3 %), queue wait p50 4.4 vs 12.9 s, TTFT-after-queue
+1.6 vs 1.2 s. Read: total output is ~100 tok/s whatever the slot count → decode is GPU-saturated at 2 slots; my "2nd slot costs
+5 %" reading did not hold. Restore cmd + cfg-p3b.yaml in scratchpad. kvPool admission (e4914c8..b6a8be3) + dashboard slotLoad
+(6479a84, acd1d7e) committed, NOT deployed; kvPool is a no-op at 2 slots (2 × 86k = 172k).
 GAP: `corrallm tools build` from the CLI activates WITHOUT the benchmark gate (p6 and p7 both ungated); the gated path
 needs the daemon API + admin token (disabled). Owner decides: CLI `--gate` flag or accept.
 Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
