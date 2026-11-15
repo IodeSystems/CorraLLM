@@ -141,6 +141,14 @@ sub-units (still each a green, tested commit), not a half-done checkbox.
    decisions moved to `done.md` § Resolved decisions; new discoveries filed (rules below);
    the §Status block synced. A stale plan is worse than none.
 
+**Quant / engine evaluation standard (owner 2026-11-15).** A speed claim for a new quant, kernel or engine
+counts only if it passes, on OUR traffic, against live Swift Q6_K_S:
+(1) KLD + top-1 agreement vs Q6 at 32k AND 64k context depth on replayed production prompts (report mean, p99,
+and top-1 on code tokens; short 512-4k wikitext runs do not count); (2) reasoning tokens per task + task success
+in a short aw4 A/B (a worse quant that thinks longer is slower per task even at higher tok/s); (3) MTP acceptance
+rate in production as a free drift signal. Throughput is judged as total output and time per task, not per-stream
+tok/s. A failure on (1) ends it; no deploy on speed alone.
+
 **Committing.** Conventional commits. Scaffolding and implementation are **separate**
 commits (`chore: scaffold X` then `feat: X`). Commit each functional unit on its own —
 never batch unrelated phases. The plan-doc update rides with its phase's commit or a
