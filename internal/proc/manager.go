@@ -173,6 +173,7 @@ type Process struct {
 	evictRank  int              // 0 low … 2 high (resistance to eviction)
 	ttl        time.Duration    // idle keep-warm window (eviction PRIORITY, not a timer)
 	idleUnload time.Duration    // quiet period before self-unload (0 = never)
+	keepWarm   bool             // sticky.keepWarm: respawned when down (keepwarm.go); never idle-unloaded
 
 	logs *logBuffer // captured stdout/stderr (spawned backends only; nil for pure-proxy)
 
@@ -328,6 +329,13 @@ type Manager struct {
 	leases       map[string]*Lease
 	leaseTTL     time.Duration
 	leaseProtect time.Duration
+
+	// sticky.keepWarm respawn state (keepwarm.go), keyed by process key.
+	// warm and restarting are guarded by mu. warmNudge (buffered 1) wakes
+	// the sweeper for a pass when capacity may have freed.
+	warm       map[string]*warmState
+	restarting map[string]bool
+	warmNudge  chan struct{}
 }
 
 // agentHoldTimeout bounds how long, after this primary starts, a spawn onto an
@@ -416,6 +424,7 @@ func NewManager(cfg *config.Config) *Manager {
 		leases:        map[string]*Lease{},
 		leaseTTL:      defaultLeaseTTL,
 		leaseProtect:  minResidency,
+		warmNudge:     make(chan struct{}, 1),
 	}
 	m.cfg.Store(cfg)
 	for name, srv := range cfg.Servers {
@@ -611,6 +620,20 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 		// proxies (remote/paid) consume no local pools.
 		var evicted []string
 		var victimsGone []chan struct{}
+		why := keepWarmFrom(ctx)
+		if why != "" && mdl.Server != "" && len(usage) > 0 {
+			if err := m.keepWarmRefuseLocked(name, mdl.Server, usage); err != nil {
+				m.mu.Unlock()
+				return nil, nil, false, err
+			}
+		}
+		if why == "" {
+			// A load somebody asked for ends an explicit unload's hold on
+			// keepWarm (keepwarm.go).
+			if ws := m.warm[key]; ws != nil {
+				ws.suppressed = false
+			}
+		}
 		if mdl.Server != "" && len(usage) > 0 {
 			ev, gone, err := m.makeRoomLocked(mdl.Server, usage, name, true)
 			if err != nil {
@@ -641,6 +664,7 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 			evictRank:  evictRank(st),
 			ttl:        stickyTTL(st),
 			idleUnload: stickyIdleUnload(st),
+			keepWarm:   mdl.Sticky != nil && mdl.Sticky.KeepWarm, // the model's own: a lane override cannot drop it
 			logs:       lb,
 			state:      StateAbsent,
 			ready:      make(chan struct{}),
@@ -657,6 +681,9 @@ func (m *Manager) EnsureReady(ctx context.Context, name string, mdl config.Model
 			m.lastLogs[key] = lb
 		}
 		m.mu.Unlock()
+		if why != "" {
+			slog.Info("keepWarm respawn", "model", name, "reason", why)
+		}
 		go m.load(name, mdl, p)
 	} else {
 		m.mu.Unlock()
@@ -2041,6 +2068,7 @@ func (m *Manager) onProcExit(name string, p *Process) {
 		delete(m.procs, p.key)
 		m.freeLocked(p.server, p.usage)
 	}
+	m.nudgeKeepWarm()
 }
 
 // makeRoomLocked ensures `usage` fits on server, evicting idle non-pinned
@@ -2433,9 +2461,14 @@ func (m *Manager) evictLocked(p *Process) {
 	if reason == "" {
 		reason = "evicted"
 	}
+	if p.keepWarm && strings.HasPrefix(reason, "evicted-for:") {
+		ws := m.warmLocked(p.key)
+		ws.evictedAt, ws.why = time.Now(), reason
+	}
 	m.event(p.ModelName, p.server, h, EventStop, reason, nil)
 	delete(m.procs, p.key)
 	m.freeLocked(p.server, p.usage)
+	m.nudgeKeepWarm()
 	if h != nil {
 		slog.Info("evicting backend", "name", p.Name, "id", h.ID())
 		// SIGTERM is a REQUEST. A llama-server in CUDA teardown (or still
@@ -2476,6 +2509,7 @@ func (m *Manager) evictLocked(p *Process) {
 				}
 				m.mu.Unlock()
 				close(done)
+				m.nudgeKeepWarm() // the teardown held the key; a keepWarm respawn may go now
 			}()
 			_ = h.Signal(host.SigTerm)
 			m.reapGroup(p.Name, h)
@@ -2690,7 +2724,8 @@ func (m *Manager) Preload(ctx context.Context) {
 		// the extension, so reading it off the provided model would skip it and
 		// nothing would preload.
 		model, ok := m.config().Effective(name)
-		if !ok || !model.Persistent {
+		keepWarm := ok && !model.Persistent && model.Sticky != nil && model.Sticky.KeepWarm
+		if !ok || (!model.Persistent && !keepWarm) {
 			continue
 		}
 		// Disabled outranks pinned, and silently. A pin is a statement about
@@ -2708,7 +2743,13 @@ func (m *Manager) Preload(ctx context.Context) {
 			slog.Info("preload skipped: model is paused", "model", name, "until", p.ResumeAt)
 			continue
 		}
-		_, done, _, err := m.EnsureReady(ctx, name, model, nil, nil)
+		lctx := ctx
+		if keepWarm {
+			// keepWarm boots like a pin but never evicts for it; a model that
+			// does not fit now is left to the sweeper's respawn pass.
+			lctx = withKeepWarm(ctx, "boot")
+		}
+		_, done, _, err := m.EnsureReady(lctx, name, model, nil, nil)
 		if err != nil {
 			slog.Warn("preload failed", "model", name, "err", err)
 			continue
@@ -2911,8 +2952,14 @@ func (m *Manager) unloadKey(key, label string, force bool, reason string) (int, 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// An operator's unload holds a keepWarm model down (keepwarm.go). Set
+	// even when nothing is resident: a pending respawn must not undo it.
+	explicit := reason == "unload-api"
 	p := m.procs[key]
 	if p == nil {
+		if explicit {
+			m.warmLocked(key).suppressed = true
+		}
 		return 0, nil
 	}
 
@@ -2920,6 +2967,9 @@ func (m *Manager) unloadKey(key, label string, force bool, reason string) (int, 
 	if p.persistent && !force {
 		p.mu.Unlock()
 		return 0, fmt.Errorf("%q is persistent (pinned); cannot unload", label)
+	}
+	if explicit {
+		m.warmLocked(key).suppressed = true
 	}
 	if p.draining {
 		refs := p.refs
@@ -3058,6 +3108,7 @@ func (m *Manager) UnloadAll() (evicted int, skipped map[string]string) {
 	}
 	for _, p := range targets {
 		p.setStopReason("unload-all")
+		m.warmLocked(p.key).suppressed = true // an operator's order, as unloadKey
 		m.evictLocked(p)
 	}
 	return len(targets), skipped
@@ -3218,7 +3269,9 @@ func (m *Manager) Snapshot() ResidencySnapshot {
 const idleSweepInterval = 30 * time.Second
 
 // StartIdleSweeper unloads backends that have gone quiet past their
-// sticky.idleUnload, until ctx is done.
+// sticky.idleUnload, and respawns sticky.keepWarm models that are down
+// (keepwarm.go) on the same tick and on every exit/eviction nudge, until ctx
+// is done.
 //
 // This is the ONLY place residency shrinks without something else asking for
 // the memory. Everything else in this file evicts reactively, under admission
@@ -3238,6 +3291,9 @@ func (m *Manager) StartIdleSweeper(ctx context.Context) {
 				m.mu.Lock()
 				m.expireLeasesLocked(time.Now())
 				m.mu.Unlock()
+				m.keepWarmPass(ctx)
+			case <-m.warmNudge:
+				m.keepWarmPass(ctx)
 			}
 		}
 	}()
@@ -3257,6 +3313,7 @@ func (m *Manager) StartIdleSweeper(ctx context.Context) {
 //     idleUnload shorter than a cold load would thrash forever.
 //   - idleUnload == 0 means never, which is every model that has not opted in.
 //     This feature is off unless asked for.
+//   - keepWarm is never touched: it would respawn at once.
 func (m *Manager) sweepIdle() {
 	if m.draining.Load() {
 		return // handed over: residency is the successor's to manage
@@ -3265,7 +3322,9 @@ func (m *Manager) sweepIdle() {
 	m.mu.Lock()
 	var due []*Process
 	for _, p := range m.procs {
-		if p.persistent || p.idleUnload <= 0 {
+		// keepWarm too: the respawn would bring it straight back. Validate
+		// refuses keepWarm with idleUnload; this covers a lane override.
+		if p.persistent || p.keepWarm || p.idleUnload <= 0 {
 			continue
 		}
 		p.mu.Lock()
@@ -3414,6 +3473,11 @@ func (m *Manager) SetConfig(cfg *config.Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cfg.Store(cfg)
+	// A reload ends every explicit unload's hold on keepWarm (keepwarm.go).
+	for _, ws := range m.warm {
+		ws.suppressed = false
+	}
+	defer m.nudgeKeepWarm()
 	for name, srv := range cfg.Servers {
 		totals, _ := config.ParseSizes(srv.Pools) // validated at load
 		reserve, _ := config.ParseSizes(srv.Reserve)

@@ -110,6 +110,19 @@ func (m *Manager) Restart(ctx context.Context, served string, o RestartOptions) 
 		return res, nil
 	}
 	res.Running = true
+	// The restart loads the model itself; a keepWarm respawn into the gap
+	// between the stop and that load would race it (keepwarm.go).
+	m.mu.Lock()
+	if m.restarting == nil {
+		m.restarting = map[string]bool{}
+	}
+	m.restarting[key] = true
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		delete(m.restarting, key)
+		m.mu.Unlock()
+	}()
 
 	// A backend still loading is restarted once it is up: stopping a load
 	// half way gains nothing, and the replacement would be the same load.

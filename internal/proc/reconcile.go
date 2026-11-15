@@ -280,6 +280,7 @@ func (m *Manager) adoptReported(server string, b agent.Backend) (_ *Process, tra
 		evictRank:  evictRank(mdl.Sticky),
 		ttl:        stickyTTL(mdl.Sticky),
 		idleUnload: stickyIdleUnload(mdl.Sticky),
+		keepWarm:   mdl.Sticky != nil && mdl.Sticky.KeepWarm,
 		logs:       logs,
 		state:      StateReady,
 		ready:      make(chan struct{}),

@@ -132,8 +132,14 @@ func (p *Process) setStopReason(r string) {
 func (m *Manager) recordExit(p *Process, h host.Handle) {
 	p.mu.Lock()
 	ordered := p.stopped
+	wasReady := p.state == StateReady
 	p.stopped = true // once
 	p.mu.Unlock()
+	// A keepWarm backend that dies once up is a crash for its backoff. One
+	// that dies during its load is counted by the respawn that started it.
+	if !ordered && wasReady && p.keepWarm {
+		m.keepWarmFailed(p.key, "crash")
+	}
 	if ordered || m.eventCh == nil {
 		return
 	}
