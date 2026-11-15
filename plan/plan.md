@@ -385,7 +385,7 @@ your specified workspace API usage limits. You will regain access on 2026-12-01 
 upstream_funds_exhausted, so 39 sessions died in the 16:00 hour and 15 in 17:00 while Swift sat idle. Fix 53c9d05: marker
 "workspace api usage limits" in fundsrefusal.go → 402 upstream_funds_exhausted; "regain access on <date> at <time> UTC"
 → error.retry_at (RFC 3339) + Retry-After seconds; /v1/capabilities 402 row updated; tests. Deployed v0.3.0-59-g53c9d05;
-aw4 told. ◐ waiting for a live Sonnet row to confirm 402. Owner note: the Anthropic workspace cap (resets 12-01) is set on
+aw4 told. ✅ confirmed live: 17:26:37 Sonnet request → 402 upstream_funds_exhausted. Owner note: the Anthropic workspace cap (resets 12-01) is set on
 Anthropic's side, separate from the earlier out-of-credit state.
 
 ### ✅ P80 — Drain-then-restart for local backends; no 502 on a known restart — 2026-11-14
