@@ -386,7 +386,14 @@ but treats 502 as a failed turn. Ask: drain/hold the queue and answer 429/503 + 
 ◐ agent: `corrallm backend restart <model>` (drain → stop → respawn with current cmd/env/build → un-drain) + proxy maps
 known-down/connection-refused-before-bytes to 503 + Retry-After; capabilities error rows. **Orchestrator rule until then:
 do not SIGTERM a live backend; use the pause row + wait-for-idle path (P76 E2).**
-**risks:** a held queue during a ~60 s Swift load adds latency; bounded drain cut-off. **blocking decisions:** deploy (owner).
+✅ built 0c68240/58d310f/215be68/e131813: `corrallm backend restart <model> [--reason] [--drain 10m]` (DB row + SIGHUP-only
+reload; daemon drains → SIGTERM (KILL 15 s) → spawn from reloaded config → done; fails if no daemon claims in 20 s);
+proxy: local backend refused / closed before reply / known stopping → 503 `backend_restarting` Retry-After 5 s; draining
+plain unload → 429 backpressure Retry-After 5 s; 502 only for malformed replies / remote upstream; mid-stream EOF = cut 200.
+Only the main chat/completions path has the 503 fallback (realtime, tokenize, /upstream, extension APIs still 502). Goes live
+with the next deploy (the COLMAP enable handoff deploys HEAD). aw4 must treat 503 backend_restarting as retryable.
+**risks:** a held queue during a ~60 s Swift load adds latency; bounded drain cut-off; a request that always crashes the backend
+becomes a retried 503.
 
 ### ✅ P79 — corrallm www site + install.sh on hz — 2026-11-14
 
