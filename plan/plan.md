@@ -378,6 +378,15 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P82 — `sticky.keepWarm`: respawn an evicted model when it fits — 2026-11-14
+Owner 11-14: build now; do not enable it on box1 until the "wait and see" check after idle unload was removed (done.md 11-14).
+- Spec: a keepWarm model that is down, and was not taken down by an explicit unload, respawns once it fits in free capacity without evicting anything. Crash backoff applies. It is not persistent: it can still be evicted and restarted.
+- Built: c3fad6c, 533283d (not deployed). `idleUnload` together with `keepWarm` is refused at config load. No respawn within 30 s of an eviction. Backoff starts at 10 s and is capped at 10 min. go test ./... passes.
+- **next:** deploy with the next release. Then the owner decides whether to set `keepWarm: true` on nomic-embed-text.
+- **optional extensions:** show keepWarm on the dashboard (ModelDef field + make dump-schema).
+- **risks:** respawn and evict thrash with a large model that takes turns on the same pool; respawn during a P80 drain.
+- **blocking decisions:** when to set `keepWarm: true` on nomic-embed-text (owner, after watching aw4's retrieval_unavailable rate).
+
 ### ✅ P81 — Anthropic workspace usage limit → 402 upstream_funds_exhausted — 2026-11-14
 
 aw4 (urgent, 11-14): since ~16:41 every anthropic-claude-sonnet-5-5 request returned the raw upstream 400 "You have reached
