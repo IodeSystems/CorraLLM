@@ -378,6 +378,16 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ✅ P81 — Anthropic workspace usage limit → 402 upstream_funds_exhausted — 2026-11-14
+
+aw4 (urgent, 11-14): since ~16:41 every anthropic-claude-sonnet-5-5 request returned the raw upstream 400 "You have reached
+your specified workspace API usage limits. You will regain access on 2026-12-01 at 00:00 UTC." aw4's fallback keys on 402 /
+upstream_funds_exhausted, so 39 sessions died in the 16:00 hour and 15 in 17:00 while Swift sat idle. Fix 53c9d05: marker
+"workspace api usage limits" in fundsrefusal.go → 402 upstream_funds_exhausted; "regain access on <date> at <time> UTC"
+→ error.retry_at (RFC 3339) + Retry-After seconds; /v1/capabilities 402 row updated; tests. Deployed v0.3.0-59-g53c9d05;
+aw4 told. ◐ waiting for a live Sonnet row to confirm 402. Owner note: the Anthropic workspace cap (resets 12-01) is set on
+Anthropic's side, separate from the earlier out-of-credit state.
+
 ### ✅ P80 — Drain-then-restart for local backends; no 502 on a known restart — 2026-11-14
 
 aw4 (11-14): Swift restarts by bare SIGTERM (orchestrator, 18:26 11-13 and 13:58 11-14) gave 502 bursts (13:54 = 12, 14:24 = 7
