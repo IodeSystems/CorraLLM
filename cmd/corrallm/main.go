@@ -84,7 +84,7 @@ func newRoot() *cobra.Command {
 		// unaffected.
 		PersistentPreRun: func(cmd *cobra.Command, _ []string) { warnIfStaleFor(cmd.Name()) },
 	}
-	root.AddCommand(newSpendCmd(), newCacheCmd(), newServeCmd(), newAgentCmd(), newConfigCmd(), newDumpGraphQLCmd(), newVersionCmd(), newIntrospectCmd(), newValidateCmd(), newFeaturesCmd(), newServiceCmd(), newToolsCmd(), newAuthCmd(), newRequestCmd(), newKeysCmd())
+	root.AddCommand(newSpendCmd(), newCacheCmd(), newServeCmd(), newAgentCmd(), newConfigCmd(), newDumpGraphQLCmd(), newVersionCmd(), newIntrospectCmd(), newValidateCmd(), newFeaturesCmd(), newServiceCmd(), newToolsCmd(), newAuthCmd(), newRequestCmd(), newKeysCmd(), newBackendCmd())
 	return root
 }
 
@@ -1441,12 +1441,16 @@ func watchReload(ctx context.Context, src *configdb.Source, st *store.Store, mgr
 			cfg, err := src.Load(ctx)
 			if err != nil {
 				slog.Error("config reload REJECTED; keeping the running config", "err", err)
+				runBackendRestarts(ctx, st, mgr, err)
 				continue
 			}
 			applyConfig(cfg, st, mgr, sc, px, h)
 			slog.Info("config reloaded", "from", "database",
 				"servers", len(cfg.Servers), "models", len(cfg.Models),
 				"lanes", len(cfg.Lanes), "groups", len(cfg.PriorityGroups))
+			// After the new config is in place, so a restart runs it
+			// (`corrallm backend restart` asks for exactly this reload).
+			runBackendRestarts(ctx, st, mgr, nil)
 		}
 	}
 }
