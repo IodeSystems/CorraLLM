@@ -725,6 +725,11 @@ claims-eviction branch; simultaneous arrivals skip each other (full prefill, no 
 20261113-181416-b1b770d9 --server box1` + drop the export + respawn Swift.
 **next:** readout after a few hours: xslot_attach_total, tokens_reused, skipped{reason}, slot-switch misses (`corrallm cache
 report --since 6h`) vs the 11-14 12 h baseline (121 misses, 2.44M lost tok); decode/5xx unchanged. (1)/(2) not chosen.
+✅ 11-15 08:2x READOUT (16.0 h canary, 7,046 Swift req, 228M prompt tok, no Swift restart): slot-switch misses 126/12 h
+(pre-canary 11-14: 121; prev 3 d: 164), 0.74 per 1M prompt tok (0.78 / 1.00); lost 3.27M tok/12 h (2.58M / 2.57M).
+xslot: 48 attaches, 892k tokens reused (~17 % of the 5.27M that would have been lost), skipped host_cache 328.
+Decode p50 79.1 tok/s (77.3 pre), 5xx 18 (503 15). Read: neutral to small gain, no regression. Kept on.
+Note: the 11-14 23:5x readout split at 08:20, not 16:20 (script bug); its "259/12 h" was wrong.
 
 Owner approved all three steps 11-10. Swift live: `--parallel 2 --kv-unified -c 172032
 --cache-ram 18432 --ctx-checkpoints 8 --slot-prompt-similarity 0.9`, build a4d4f2fd4 + 0002-0004.
