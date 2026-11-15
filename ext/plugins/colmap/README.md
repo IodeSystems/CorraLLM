@@ -91,7 +91,7 @@ processes in `nvidia-smi` sampled every 500 ms (short peaks can be missed); RSS 
 | step | sparse, max_image_size 3200 (3072 px used) | dense run, max_image_size 1600 |
 |---|---|---|
 | extract (GPU SIFT) | 4.6 s, 5,846 MiB VRAM, 470 MiB RSS | 10.0 s, 1,712 MiB VRAM |
-| match (exhaustive, GPU) | 4.0 s, 5,336 MiB VRAM | 5.6 s, 1,348 MiB VRAM |
+| match (exhaustive, GPU) | 4.0 s, 1,480 MiB VRAM (5,336 was first recorded here; that sample was the extractor exiting) | 5.6 s, 1,348 MiB VRAM |
 | map (incremental, CPU) | 21.1 s, 417 MiB RSS, 30/30 registered | 25.6 s, 30/30 |
 | align + package | 0.9 s | 1.3 s |
 | undistort (CPU) | — | 1.4 s |
@@ -111,5 +111,26 @@ Priors: 10 of the 30 images given cartesian priors (camera centres from the data
 `transforms` checked against nerfstudio's own reader + transform on the 30 real poses: max |Δ| 3.6e-15.
 `glb` of the Poisson mesh: Khronos glTF-Validator 2.0.0-dev.3.10, 0 errors, 0 warnings; trimesh loads it.
 
-Lease sizes (`runner.DefaultUsage`, at max_image_size 3200, scaled by (size/3200)², floor ⅓, cap 8 GB): extract
-6,144 MiB, match 5,632 MiB, dense 5,120 MiB (dense at 3200 px not measured).
+T1b (live corrallm lease, 11-14): 12 of the images at max_image_size 3072, dense. patch_match_stereo peaked
+at 1,698 MiB (photometric pass) and 1,996-2,080 MiB (geometric pass), against a 4,718 MiB lease; extraction
+again 5,846 MiB.
+
+### GPU lease sizes
+
+Each GPU step's gpu1 lease is estimated per job (`runner.GPUEstimate`, `internal/runner/vram.go`) from the
+images, fitted to the peaks above, × 1.2, rounded up to 64 MiB, capped at the lease max (8 GB). P = the largest
+image's pixels after the max_image_size cap (read from the image headers; an unreadable header counts as a
+square max_image_size image). S = source images per view = min(patch-match.cfg's `__auto__, N` (20), images − 1).
+
+| step | model (MiB) | why | 3072×2304, 12 images | 1600×1200, 30 images | old lease (3072 / 1600) |
+|---|---|---|---|---|---|
+| extract | 176 + 802 · P(Mpx) | SiftGPU pyramid grows with the pixels (upsampled ×2) | 7,040 (5,846 measured) | 2,112 (1,712) | 5,662 / 2,048 — **under** at 3072 |
+| match | 1,480 | SiftMatchGPU buffers follow the feature count (capped by max_num_features), not the image | 1,792 (1,480) | 1,792 (1,348) | 5,190 / 1,877 |
+| dense | 464 + 19.1 · P · (S + 1) | per reference pixel: a cost and two selection floats per source, plus each source image and depth map | 2,560 (2,080) | 1,536 (1,230) | 4,718 / 1,706 |
+
+The T1b dense lease (2,560 MiB) fits beside chandra (6,210 MiB) and nomic (1,430 MiB) in gpu1's 10,240 MiB.
+Known gaps: two points per fit; the T1b point assumes S = 11 (all other images; fewer would steepen the dense
+slope); a square 3200 px input makes the extract estimate exceed the 8 GB cap (the job log warns). A GPU size
+given with `--usage` replaces the estimate. The job log records the lease (`=== gpu1 lease dense: …`) and, when
+nvidia-smi is found (`--nvidia-smi`), the sampled peak per step (`=== dense peak VRAM … MiB (lease …)`, every
+2 s; also `gpu_peak_mib` in the job record), to re-fit these numbers.

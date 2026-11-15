@@ -47,7 +47,8 @@ func run() error {
 		models     = flag.String("models", "colmap-sfm", "served model names accepted on create (comma-separated)")
 		gpuPool    = flag.String("gpu-pool", "gpu1", "corrallm pool the GPU stages lease")
 		gpuIndex   = flag.String("gpu-index", "0", "COLMAP gpu_index (inside CUDA_VISIBLE_DEVICES)")
-		usageFlag  = flag.String("usage", "", "override lease usage per step: extract=gpu1:3GB,system:4GB;match=…")
+		usageFlag  = flag.String("usage", "", "override lease usage per step: extract=gpu1:3GB,system:4GB;match=… (a GPU size here replaces the per-job estimate)")
+		nvidiaSMI  = flag.String("nvidia-smi", "nvidia-smi", "nvidia-smi for the per-step VRAM peak in the job log; empty = off")
 		quota      = flag.String("quota", "50GiB", "storage quota per owner (files + pending upload parts)")
 		minFree    = flag.String("min-free", "20GiB", "refuse writes (507 storage_full) below this much free disk")
 		fileTTL    = flag.Duration("file-ttl", 7*24*time.Hour, "default file lifetime")
@@ -91,6 +92,15 @@ func run() error {
 		}
 	}
 
+	var vram runner.VRAMFunc
+	if *nvidiaSMI != "" {
+		if p, err := exec.LookPath(*nvidiaSMI); err == nil {
+			vram = runner.NvidiaSMI(p)
+		} else {
+			slog.Warn("no nvidia-smi: GPU steps run without a VRAM peak in the job log", "nvidia-smi", *nvidiaSMI)
+		}
+	}
+
 	var leaser lease.Leaser = lease.Always{}
 	if *corrallm != "" {
 		if *tokenFile == "" {
@@ -115,7 +125,7 @@ func run() error {
 	rn := runner.New(runner.Config{
 		Colmap: *colmapBin, FFmpeg: ff, DataDir: *dataDir, Leaser: leaser, Extension: *extension,
 		Usage: usage, GPUPool: *gpuPool, GPUIndex: *gpuIndex, StopGrace: *stopGrace, YieldKill: *yieldKill, OutputTTL: *outputTTL,
-		LeaseOpts: lease.Options{Poll: *leasePoll, MaxWait: *leaseWait}, MaxImages: *maxImages,
+		LeaseOpts: lease.Options{Poll: *leasePoll, MaxWait: *leaseWait}, MaxImages: *maxImages, VRAM: vram,
 	}, js, fs)
 	a := &api.API{Files: fs, Jobs: js, Runner: rn, Models: splitList(*models), MaxImages: *maxImages, FFmpeg: ff}
 

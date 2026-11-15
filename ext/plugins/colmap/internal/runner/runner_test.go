@@ -1,7 +1,12 @@
 package runner_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"image"
+	"image/jpeg"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,6 +40,9 @@ type env struct {
 	delay string
 	fail  string
 	lease lease.Leaser
+	jpeg  image.Rectangle // non-empty: inputs are real JPEGs of this size
+	usage map[string]map[string]string
+	vram  runner.VRAMFunc
 }
 
 func newEnv(t *testing.T) *env {
@@ -55,6 +63,7 @@ func (e *env) runner() *runner.Runner {
 	return runner.New(runner.Config{
 		Colmap: os.Args[0], DataDir: e.dir, Leaser: e.lease, Env: environ, StopGrace: 5 * time.Second,
 		LeaseOpts: lease.Options{Poll: 200 * time.Millisecond, Backoff: 50 * time.Millisecond},
+		Usage:     e.usage, VRAM: e.vram, VRAMEvery: 10 * time.Millisecond,
 	}, e.jobs, e.files)
 }
 
@@ -65,7 +74,15 @@ func (e *env) job(id string, n int, name func(int) string, mut func(*jobs.Reques
 	rec := &jobs.Record{Job: jobs.Job{ID: id, Model: "colmap-sfm", Metadata: map[string]string{}}, Owner: "alice", Request: req, Priors: ps}
 	for i := 0; i < n; i++ {
 		nm := name(i)
-		f, err := e.files.Create("alice", filepath.Base(nm), files.PurposeUser, 0, strings.NewReader("\xff\xd8\xff fake "+nm))
+		var body io.Reader = strings.NewReader("\xff\xd8\xff fake " + nm)
+		if !e.jpeg.Empty() {
+			var buf bytes.Buffer
+			if err := jpeg.Encode(&buf, image.NewGray(e.jpeg), nil); err != nil {
+				e.t.Fatal(err)
+			}
+			body = &buf
+		}
+		f, err := e.files.Create("alice", filepath.Base(nm), files.PurposeUser, 0, body)
 		if err != nil {
 			e.t.Fatal(err)
 		}
@@ -478,17 +495,104 @@ func TestProgress(t *testing.T) {
 	}
 }
 
-func TestGPUUsageScalesWithImageSize(t *testing.T) {
-	u := map[string]string{"gpu1": "6144MiB", "system": "4GB"}
-	cases := map[int]string{3200: "6144MiB", 1600: "2048MiB" /* floor: a third */, 2400: "3456MiB", 4800: "7629MiB" /* cap 8 GB */}
-	for size, want := range cases {
-		got := runner.GPUUsage(u, "gpu1", size, 8e9)
-		if got["gpu1"] != want || got["system"] != "4GB" {
-			t.Errorf("size %d: %v, want gpu1 %s", size, got, want)
+// GPUEstimate covers every measured peak (README, T1b) by ≥ 15 % and sizes
+// the T1b dense lease so chandra (6,210) + nomic (1,430) still fit in 10,240.
+func TestGPUEstimate(t *testing.T) {
+	const mpx3072, mpx1600 = 3072 * 2304, 1600 * 1200
+	cases := []struct {
+		step     string
+		d        runner.Dims
+		want     int64 // MiB
+		measured int64 // MiB peak on the 3080
+	}{
+		{runner.StepExtract, runner.Dims{MaxPixels: mpx3072, Images: 30}, 7040, 5846},
+		{runner.StepExtract, runner.Dims{MaxPixels: mpx1600, Images: 30}, 2112, 1712},
+		{runner.StepMatch, runner.Dims{}, 1792, 1480},
+		{runner.StepDense, runner.Dims{MaxPixels: mpx3072, Images: 12, MaxSrc: 20}, 2560, 2080},
+		{runner.StepDense, runner.Dims{MaxPixels: mpx1600, Images: 30, MaxSrc: 20}, 1536, 1230},
+	}
+	for _, c := range cases {
+		got, capped := runner.GPUEstimate(c.step, c.d, 8e9)
+		if got>>20 != c.want || capped {
+			t.Errorf("%s %+v = %d MiB capped %v, want %d", c.step, c.d, got>>20, capped, c.want)
+		}
+		if float64(got>>20) < 1.15*float64(c.measured) {
+			t.Errorf("%s %+v = %d MiB: under 1.15 × the measured %d", c.step, c.d, got>>20, c.measured)
 		}
 	}
-	if u["gpu1"] != "6144MiB" {
-		t.Fatal("input table modified")
+	if d, _ := runner.GPUEstimate(runner.StepDense, runner.Dims{MaxPixels: mpx3072, Images: 12, MaxSrc: 20}, 8e9); 6210+1430+d>>20 > 10240 {
+		t.Errorf("T1b dense lease %d MiB does not fit beside chandra + nomic", d>>20)
+	}
+	if got, capped := runner.GPUEstimate(runner.StepExtract, runner.Dims{MaxPixels: 4800 * 4800}, 8e9); got != 8e9 || !capped {
+		t.Errorf("4800 px square extract = %d capped %v, want the 8 GB cap", got, capped)
+	}
+	if got, _ := runner.GPUEstimate(runner.StepMap, runner.Dims{MaxPixels: mpx3072}, 8e9); got != 0 {
+		t.Errorf("map (CPU) estimate %d", got)
+	}
+}
+
+// The runner sizes each GPU lease from the job's images: extract from the
+// inputs, dense from the undistorted images and patch-match.cfg; a GPU size
+// in the usage table replaces the estimate.
+func TestGPULeaseFromImages(t *testing.T) {
+	e := newEnv(t)
+	srv := leasetest.New("tok")
+	defer srv.Close()
+	e.lease = &lease.Client{Base: srv.URL, Token: "tok"}
+	e.jpeg = image.Rect(0, 0, 3072, 2304)
+	e.job("recon_g", 4, img, func(r *jobs.Request) { r.MaxImageSize = 1600 }, nil)
+	rec := e.runUntil(e.runner(), "recon_g", 30*time.Second)
+	if rec.Status != jobs.Completed {
+		t.Fatalf("status %s %+v", rec.Status, rec.Error)
+	}
+	got := map[string]string{}
+	for _, ev := range srv.Events() {
+		if ev.Kind == "grant" {
+			got[ev.Stage] = ev.Usage["gpu1"]
+		}
+	}
+	// 3072×2304 at max_image_size 1600 → 1600×1200 = 1.92 Mpx.
+	if got["extract"] != "2112MiB" || got["match"] != "1792MiB" {
+		t.Fatalf("gpu1 leases %v", got)
+	}
+
+	e2 := newEnv(t)
+	srv2 := leasetest.New("tok")
+	defer srv2.Close()
+	e2.lease = &lease.Client{Base: srv2.URL, Token: "tok"}
+	e2.usage = map[string]map[string]string{runner.StepExtract: {"gpu1": "3GB"}}
+	e2.job("recon_g2", 3, img, nil, nil)
+	if rec := e2.runUntil(e2.runner(), "recon_g2", 30*time.Second); rec.Status != jobs.Completed {
+		t.Fatalf("status %s", rec.Status)
+	}
+	for _, ev := range srv2.Events() {
+		if ev.Kind == "grant" && ev.Stage == "extract" && ev.Usage["gpu1"] != "3GB" {
+			t.Fatalf("table override ignored: %v", ev.Usage)
+		}
+	}
+}
+
+// The sampled VRAM peak per GPU step lands in the job log and the record.
+func TestGPUPeakRecorded(t *testing.T) {
+	e := newEnv(t)
+	e.delay = "30ms"
+	e.vram = func(ctx context.Context, pid int) (int64, error) {
+		if pid <= 0 {
+			return 0, errors.New("no pid")
+		}
+		return 1234, nil
+	}
+	e.job("recon_v", 4, img, nil, nil)
+	rec := e.runUntil(e.runner(), "recon_v", 30*time.Second)
+	if rec.Status != jobs.Completed {
+		t.Fatalf("status %s %+v", rec.Status, rec.Error)
+	}
+	if rec.GPUPeakMiB["extract"] != 1234 || rec.GPUPeakMiB["match"] != 1234 || rec.GPUPeakMiB["map"] != 0 {
+		t.Fatalf("peaks %v", rec.GPUPeakMiB)
+	}
+	b, _ := os.ReadFile(filepath.Join(e.dir, "jobs", "recon_v", "out", "log.txt"))
+	if !strings.Contains(string(b), "=== extract peak VRAM 1234 MiB (lease ") {
+		t.Fatalf("log has no peak line:\n%s", b)
 	}
 }
 

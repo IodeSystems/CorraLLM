@@ -125,7 +125,9 @@ type Record struct {
 	Priors  map[string]*priors.Prior `json:"priors,omitempty"`
 	Done    []string                 `json:"done,omitempty"`   // finished runner steps
 	Yields  int                      `json:"yields,omitempty"` // GPU yields so far
-	Purged  bool                     `json:"purged,omitempty"` // outputs deleted at expiry
+	// GPUPeakMiB is the sampled VRAM peak per GPU step (runner VRAM).
+	GPUPeakMiB map[string]int64 `json:"gpu_peak_mib,omitempty"`
+	Purged     bool             `json:"purged,omitempty"` // outputs deleted at expiry
 }
 
 // IsDone reports whether a runner step finished.

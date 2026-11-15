@@ -37,8 +37,9 @@ type Config struct {
 	DataDir   string // jobs live in DataDir/jobs/<id>
 	Leaser    lease.Leaser
 	Extension string // lease extension name ("colmap")
-	// Usage is each step's lease usage (pool → size). A GPU step must name
-	// GPUPool; a CPU step with no entry takes no lease.
+	// Usage is each step's lease usage (pool → size); a CPU step with no
+	// entry takes no lease. A GPU step's GPUPool size is estimated per job
+	// (GPUEstimate) unless the table names one, which is then used as is.
 	Usage     map[string]map[string]string
 	GPUPool   string
 	GPUIndex  string        // COLMAP gpu_index inside CUDA_VISIBLE_DEVICES ("0")
@@ -48,18 +49,22 @@ type Config struct {
 	LeaseOpts lease.Options
 	Env       []string // child environment (default os.Environ())
 	MaxImages int
-	GPUMax    int64 // cap on a scaled GPU lease, bytes (lease.max; default 8 GB)
+	GPUMax    int64 // cap on an estimated GPU lease, bytes (lease.max; default 8 GB)
+	// VRAM, when set, samples each GPU child's memory every VRAMEvery
+	// (default 2 s); the peak per step goes to the job log and
+	// Record.GPUPeakMiB, to tune the estimate. nil = not sampled.
+	VRAM      VRAMFunc
+	VRAMEvery time.Duration
 }
 
-// DefaultUsage is the per-step lease table. GPU sizes are for
-// max_image_size 3200 and scale with it (GPUUsage). Measured on the 3080
-// (README): peak VRAM extract 5,846 MiB / match 5,336 MiB at 3072 px images,
-// 1,712 / 1,348 MiB at 1600 px; plus headroom.
+// DefaultUsage is the per-step lease table. The GPU steps' gpuPool size is
+// not in it: GPUEstimate sizes it per job from the images (vram.go).
 func DefaultUsage(gpuPool string) map[string]map[string]string {
+	_ = gpuPool
 	return map[string]map[string]string{
-		StepExtract: {gpuPool: "6144MiB", "system": "4GB"},
-		StepMatch:   {gpuPool: "5632MiB", "system": "4GB"},
-		StepDense:   {gpuPool: "5120MiB", "system": "8GB"}, // 1,230 MiB measured at 1600 px; 3200 px scaled, not measured
+		StepExtract: {"system": "4GB"},
+		StepMatch:   {"system": "4GB"},
+		StepDense:   {"system": "8GB"},
 		StepMap:     {"system": "8GB"},
 		StepFuse:    {"system": "8GB"},
 		StepMesh:    {"system": "8GB"},
@@ -88,32 +93,6 @@ var apiStage = map[string]string{
 }
 
 var gpuStep = map[string]bool{StepExtract: true, StepMatch: true, StepDense: true}
-
-// GPUUsage scales the GPU pool's size (given for max_image_size 3200) by
-// (size/3200)², which is how SIFT and PatchMatch memory grows with the image,
-// with a floor of a third of it and a cap of max bytes.
-func GPUUsage(u map[string]string, pool string, size int, max int64) map[string]string {
-	base, err := ParseSize(u[pool])
-	if err != nil || base <= 0 {
-		return u
-	}
-	r := float64(size) / 3200
-	v := int64(float64(base) * r * r)
-	v = min(maxI(v, base/3), max)
-	out := make(map[string]string, len(u))
-	for k, x := range u {
-		out[k] = x
-	}
-	out[pool] = strconv.FormatInt(v>>20, 10) + "MiB"
-	return out
-}
-
-func maxI(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
-}
 
 // ParseSize reads 50GiB, 512MiB, 3GB, 1024 (bytes). GB = 1e9, GiB = 2^30
 // (corrallm's config.ParseSize uses the same suffixes).
@@ -230,6 +209,9 @@ func New(cfg Config, js *jobs.Store, fs *files.Store) *Runner {
 	}
 	if cfg.MaxImages <= 0 {
 		cfg.MaxImages = jobs.DefaultMaxImages
+	}
+	if cfg.VRAMEvery <= 0 {
+		cfg.VRAMEvery = 2 * time.Second
 	}
 	return &Runner{cfg: cfg, Jobs: js, Files: fs, wake: make(chan struct{}, 1)}
 }
@@ -587,12 +569,14 @@ func (j *job) run(ctx context.Context, step string, argv []string, parse func(st
 		}
 	}
 	fmt.Fprintf(j.log, "$ %s\n", strings.Join(argv, " "))
-	usage := j.r.cfg.Usage[step]
-	if gpuStep[step] {
-		usage = GPUUsage(usage, j.r.cfg.GPUPool, j.rec.Request.MaxImageSize, j.r.cfg.GPUMax)
+	usage := j.usage(step)
+	var peak *peakSampler
+	if gpuStep[step] && j.r.cfg.VRAM != nil {
+		peak = &peakSampler{f: j.r.cfg.VRAM, interval: j.r.cfg.VRAMEvery}
+		defer j.recordPeak(step, peak, usage[j.r.cfg.GPUPool])
 	}
 	if len(usage) == 0 {
-		out, err := runOnce(ctx, argv, j.r.cfg.Env, j.ws, j.log, onLine, nil, j.r.cfg.StopGrace, j.r.cfg.YieldKill)
+		out, err := runOnce(ctx, argv, j.r.cfg.Env, j.ws, j.log, onLine, nil, j.r.cfg.StopGrace, j.r.cfg.YieldKill, peak)
 		return j.result(ctx, step, out, err)
 	}
 	req := lease.Request{
@@ -619,7 +603,7 @@ func (j *job) run(ctx context.Context, step string, argv []string, parse func(st
 		}
 		fmt.Fprintf(j.log, "=== lease %s granted for %s\n", held.ID(), step)
 		j.setWaiting(false)
-		out, err := runOnce(ctx, argv, j.r.cfg.Env, j.ws, j.log, onLine, held.Yield(), j.r.cfg.StopGrace, j.r.cfg.YieldKill)
+		out, err := runOnce(ctx, argv, j.r.cfg.Env, j.ws, j.log, onLine, held.Yield(), j.r.cfg.StopGrace, j.r.cfg.YieldKill, peak)
 		held.Release()
 		if out == yielded {
 			fmt.Fprintf(j.log, "=== yielded %s (child: %s); resuming when the lease is granted again\n", step, exitDetail(err))
@@ -629,6 +613,55 @@ func (j *job) run(ctx context.Context, step string, argv []string, parse func(st
 		}
 		return j.result(ctx, step, out, err)
 	}
+}
+
+// usage is step's lease usage: the table's, plus the GPU estimate for a GPU
+// step whose table entry names no GPU size.
+func (j *job) usage(step string) map[string]string {
+	pool := j.r.cfg.GPUPool
+	u := map[string]string{}
+	for k, v := range j.r.cfg.Usage[step] {
+		u[k] = v
+	}
+	if !gpuStep[step] || u[pool] != "" {
+		return u
+	}
+	maxSize := j.rec.Request.MaxImageSize
+	var d Dims
+	switch step {
+	case StepExtract:
+		d = scanDims(j.images(), maxSize)
+	case StepDense:
+		dense := filepath.Join(j.ws, "dense")
+		d = scanDims(filepath.Join(dense, "images"), maxSize)
+		d.MaxSrc = maxSrcImages(filepath.Join(dense, "stereo", "patch-match.cfg"))
+	}
+	b, capped := GPUEstimate(step, d, j.r.cfg.GPUMax)
+	u[pool] = strconv.FormatInt(b>>20, 10) + "MiB"
+	_, _ = fmt.Fprintf(j.log, "=== %s lease %s: %s (%d images, largest %.2f Mpx after max_image_size %d, sources ≤ %d)\n",
+		pool, step, u[pool], d.Images, float64(d.MaxPixels)/1e6, maxSize, min(d.MaxSrc, max(d.Images-1, 0)))
+	if capped {
+		_, _ = fmt.Fprintf(j.log, "=== WARNING: the %s estimate exceeds the lease cap; leased the cap, the step may run out of GPU memory\n", step)
+		slog.Warn("gpu lease estimate capped", "job", j.rec.ID, "step", step, "cap", u[pool])
+	}
+	return u
+}
+
+// recordPeak logs the step's sampled VRAM peak and keeps it in the record.
+func (j *job) recordPeak(step string, p *peakSampler, leased string) {
+	v := p.Peak()
+	if v <= 0 {
+		return
+	}
+	_, _ = fmt.Fprintf(j.log, "=== %s peak VRAM %d MiB (lease %s)\n", step, v, leased)
+	slog.Info("gpu peak", "job", j.rec.ID, "step", step, "peak_mib", v, "lease", leased)
+	_ = j.update(func(x *jobs.Record) error {
+		if x.GPUPeakMiB == nil {
+			x.GPUPeakMiB = map[string]int64{}
+		}
+		x.GPUPeakMiB[step] = max(x.GPUPeakMiB[step], v)
+		return nil
+	})
 }
 
 func (j *job) result(ctx context.Context, step string, out outcome, err error) error {

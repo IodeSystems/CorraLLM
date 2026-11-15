@@ -116,11 +116,12 @@ func (c *child) stop(killAt time.Time) error {
 // (killed after 20 s), so waiting for the whole grace window only delays the
 // incoming model; a kill loses the in-flight block, which the rerun redoes.
 func runOnce(ctx context.Context, argv, env []string, dir string, log io.Writer, onLine func(string),
-	yield <-chan lease.Yield, stopGrace, yieldKill time.Duration) (outcome, error) {
+	yield <-chan lease.Yield, stopGrace, yieldKill time.Duration, peak *peakSampler) (outcome, error) {
 	c, err := startChild(argv, env, dir, log, onLine)
 	if err != nil {
 		return exited, err
 	}
+	defer peak.watch(c.cmd.Process.Pid)()
 	select {
 	case err := <-c.done:
 		return exited, err
