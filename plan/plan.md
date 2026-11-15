@@ -734,7 +734,14 @@ Note: the 11-14 23:5x readout split at 08:20, not 16:20 (script bug); its "259/1
 14.3k prompt), 2 = 87 %, 3-5 = 89 %, 6-10 = 92 %, 11-50 = 93-94 %, 51-100 = 92 %, 101+ = 88 % (evicted 9 %). Turn 1 = 25-31 %
 of all uncached tokens. Turns/conversation: ~15 on 11-11..13, 9.4 on 11-14, 7.9 on 11-15 → explains most of the
 91 → 89 % drop. Caveat: prompt_cache_key identity (bd7bb4f, 11-14 10:44) may split conversations; unverified.
-Lever: turn-1 reuses only ~4.4k of 14.3k tokens across conversations (check aw4 system-prompt prefix stability).
+11-15 TURN-1 ROOT CAUSE (agent, 24 h, scratchpad t1*.py): checkpoint-limited, not divergence/eviction. Hybrid model reuses
+only up to a checkpoint <= lcp; entries keep checkpoints near prompt end only → 837/1,235 turn-1 "forcing full prompt
+re-processing". Shared prefixes exist: system+tools 2,977 / 3,806 tok, deeper 7k-20k. Upper bound per 24 h: checkpoint fix
+25 → 46 % turn-1 reuse (+2.69M tok, ~25 min prefill); + perfect retention 57 % (+1.56M, ~15 min). Proposed p7: keep the
+first-user-message (system-prefix) checkpoint in every entry (+ optional message-boundary ones), ~150 MiB/entry.
+**blocking decision:** owner go for p7 canary.
+Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
+entry → recheck the knee after p7.
 
 Owner approved all three steps 11-10. Swift live: `--parallel 2 --kv-unified -c 172032
 --cache-ram 18432 --ctx-checkpoints 8 --slot-prompt-similarity 0.9`, build a4d4f2fd4 + 0002-0004.
