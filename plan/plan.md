@@ -793,6 +793,16 @@ Fix candidates (owner picks): (1) target sampling off the CPU loop (--backend-sa
 (2) GPU-resident 4-step draft loop; (3) q8_0 KV read without full-view dequant.
 BUG (corrallm): `backend restart` at 13:32:05 spawned the OLD cmd after a config reload ("cmd unchanged") — likely a request
 queued before the reload carried the old model config. Needs a fix: restart must spawn from the current config.
+Fix 1 (--backend-sampling) REJECTED by code read 11-15: GPU penalties sampler keeps ONE input per sequence while spec verify
+builds 5 rows → rows read uninitialized data (llama-sampler.cpp:3020-3026, :3149) → wrong logits/crash; Swift instruct sends
+presencePenalty 1.5. Also grammar + reasoning budget force CPU (sampling.cpp:422-432), and corrallm adds
+reasoning_budget_tokens to every thinking request → almost nothing would move. Alternative: p8 = sample the 3 slots on
+parallel threads (~4-5 ms/step, ~8 %, no distribution change).
+Fix 2 research: draft sampling is ALREADY on GPU (--spec-draft-backend-sampling default, top_k 10). Host gap between draft
+graphs median 0.91 ms (0.71 ms CPU with no CUDA call, unsplit — needs CPU samples; 0.15 ms = 8 H2D copies incl 1.06 MB mask).
+Only ~3.6 of the 6.6 ms is in the draft loop; rest in process()/accept. Options: trimmed draft vocab PR #31031 (open; ~2.4 ms
+GPU/step; acceptance −6..−26 % multilingual, +2..7 % elsewhere; target distribution unchanged); unrolled 4-step draft graph
+~2.5-3 ms, 500-1000 lines, high risk; input-copy fixes ~1 %. Next: profile the 0.71 ms with CPU sampling on the 3080.
 GAP: `corrallm tools build` from the CLI activates WITHOUT the benchmark gate (p6 and p7 both ungated); the gated path
 needs the daemon API + admin token (disabled). Owner decides: CLI `--gate` flag or accept.
 Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
