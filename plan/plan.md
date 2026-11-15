@@ -812,6 +812,11 @@ llama-kv-cache.cpp:1312-1326). ~129.5k cells converted vs ~90k tokens held at 13
 No flag avoids it. Upstream PR #31802 (OPEN, unreviewed) fuses q8_0 dequant into MMA, kv_rows-aware, gated to head dim 256 +
 GQA > 4 (= this model), toggle GGML_CUDA_FATTN_MMA_FUSED; author reports decode +18 % @32k, +34 % @64k, +63 % @131k (sm_89).
 Does not apply cleanly (fattn-vec.cuh, fattn.cu); diff at scratchpad pr31802/pr.diff. **Owner decides:** carry it as a local patch.
+p8 WRITTEN 11-15 (parked): scratchpad p8/p8-parallel-slot-sampling.patch (601 lines, 5 files) on p1..p7; env LLAMA_PAR_SAMPLING=1,
+_THREADS (4); metrics llamacpp:par_sampling_*. Needs 3 guards in llama_context::synchronize/output_reorder + ggml-backend next_copy
+(TSan negative control proves them needed). CPU: same failure sets on/off; seeded outputs bit-identical on/off (tinygemma3);
+sampling wall −30..40 % (not 3×, cause unknown) → expect ~2-3 ms/step on Swift (~4 %), not the 4-5 ms estimated.
+Untested: CUDA, 27B, MTP.
 GAP: `corrallm tools build` from the CLI activates WITHOUT the benchmark gate (p6 and p7 both ungated); the gated path
 needs the daemon API + admin token (disabled). Owner decides: CLI `--gate` flag or accept.
 Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
