@@ -712,6 +712,7 @@ func (p *Proxy) Mount(mux interface {
 	mux.Handle("/v1/realtime", http.HandlerFunc(p.handleRealtime))
 	// /v1/models is a catalog response synthesized from config, not proxied.
 	mux.Handle("/v1/models", http.HandlerFunc(p.handleModels))
+	mux.Handle("/v1/models/*", http.HandlerFunc(p.handleModel))
 	// /v1/messages/count_tokens (Anthropic's shape) is metadata, not inference —
 	// mounted outside handleInference so it never takes an admission slot. See
 	// handleCountTokens.
@@ -3026,6 +3027,36 @@ func (p *Proxy) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 // the residency snapshot. Standard fields (id/object/created/owned_by) keep it
 // drop-in compatible.
 func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
+	p.serveModels(w, req, "")
+}
+
+// handleModel serves GET /v1/models/{id}: one entry of the list. {id} may be a
+// model, a lane, or an alias; an alias answers with its target's entry under the
+// target's real id. 404 for an unknown or unreachable id.
+func (p *Proxy) handleModel(w http.ResponseWriter, req *http.Request) {
+	id, err := url.PathUnescape(strings.TrimPrefix(req.URL.Path, "/v1/models/"))
+	if err != nil || id == "" {
+		jsonErr(w, http.StatusNotFound, "model not found")
+		return
+	}
+	cfg := p.config()
+	only := id
+	_, isModel := cfg.AllModels()[id]
+	_, isLane := cfg.Lanes[id]
+	if !isModel && !isLane {
+		cands, ok := cfg.ResolveServed(id)
+		if !ok || len(cands) == 0 {
+			jsonErr(w, http.StatusNotFound, "model not found: "+id)
+			return
+		}
+		only = cands[0].Name
+	}
+	p.serveModels(w, req, only)
+}
+
+// serveModels writes the catalog. With only set it writes that one entry as a
+// bare object (404 when absent or not usable by the caller).
+func (p *Proxy) serveModels(w http.ResponseWriter, req *http.Request, only string) {
 	// A key lists only what its `models` let it use (P65), as the request
 	// path would admit it: a model the key cannot reach is not offered.
 	caller := p.resolveCaller(callerKey(req))
@@ -3062,6 +3093,10 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 		Persistent    bool     `json:"persistent,omitempty"`     // pinned + preloaded
 		ContextLength int      `json:"context_length,omitempty"` // one request's window: n_ctx (if resident), capped by contextPerRequest
 		Slots         int      `json:"slots,omitempty"`          // admission concurrency the scheduler grants: config maxConcurrent, not a spawn-time tuned value
+		// Aliases: other names that resolve to this model (config `aliases`).
+		// A request naming one is served by this entry; the entry's id stays
+		// canonical. Absent when there are none. Lanes carry none.
+		Aliases []string `json:"aliases,omitempty"`
 		// Modalities: accepted input modalities keyed by name (text|image|audio),
 		// each with optional metadata (image maxResolution/formats, text maxTokens).
 		Modalities map[string]config.ModalitySpec `json:"modalities"`
@@ -3112,6 +3147,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 			State: "absent", Quality: mc.Quality, Type: mc.Type, Kind: "model",
 			Persistent:     mc.Persistent,
 			Slots:          mc.Slots(), // what sched.Admit grants (see admit); a resident process's tuned/banner count may differ
+			Aliases:        mc.Aliases,
 			Modalities:     mc.EffectiveModalities(name, p.cost.IsAudioType(mc.Type)),
 			Outputs:        config.ModelIO(name, mc, p.cost.IsAudioType(mc.Type)).Out,
 			OutputFormats:  config.TypeOutputFormats(mc.Type),
@@ -3199,6 +3235,16 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if only != "" {
+		for _, e := range out.Data {
+			if e.ID == only {
+				_ = json.NewEncoder(w).Encode(e)
+				return
+			}
+		}
+		jsonErr(w, http.StatusNotFound, "model not found: "+only)
+		return
+	}
 	_ = json.NewEncoder(w).Encode(out)
 }
 

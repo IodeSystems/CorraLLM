@@ -16,6 +16,11 @@ It runs in production today, fronting a mixed embeddings and chat workload.
 - **OpenAI-compatible proxy** — `/v1/chat/completions`, `/v1/completions`,
   `/v1/embeddings`, `/v1/rerank`, `/v1/models`, and the audio endpoints (STT, TTS,
   realtime, with optional diarization; see below). Streaming is preserved.
+  `/v1/models` also carries corrallm fields per entry: `state`, `slots` (the
+  concurrency admission grants: config `maxConcurrent`), `context_length`,
+  `thinking_*`, and `aliases` (other names that resolve to the entry, from the
+  model's `aliases:`; aliases get no entries of their own). `GET /v1/models/{id}`
+  returns one entry; an alias id returns its target's entry under the real id.
 - **Model lifecycle** — starts a backend's `cmd` on demand and waits for a real
   health check (llama-server's `/health`, not just an open port). Concurrent cold
   loads are coalesced, and process groups are cleaned up on shutdown.
