@@ -2040,7 +2040,7 @@ func TestModelsCatalogReasoningAndPerRequestContext(t *testing.T) {
 	}
 	b := mock.ThinkingBudget
 	if mock.ThinkingDefault != "on" || strings.Join(mock.ThinkingModes, ",") != "off,on" || mock.ThinkingEffort != "medium" ||
-		b == nil || b.FractionOfRemaining != 0.2 || b.Min != 2048 || b.Max != 8192 {
+		b == nil || b.FractionOfRemaining != 0.2 || b.Min != 2048 || b.Max != 8192 || b.AnswerReserve != config.DefaultAnswerReserve {
 		t.Errorf("thinking = %+v", mock)
 	}
 	if p := got.Data[byID["plain"]]; p.ThinkingDefault != "" || p.ThinkingModes != nil {

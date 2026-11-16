@@ -299,7 +299,9 @@ func candidateChain() ([]BodyStage, writerOrders) {
 			return nil
 		}},
 		{name: "sampling", applies: func(c *chainCtx) bool { return c.chat() || c.convertedMessages() }, run: func(c *chainCtx) *stageError {
-			c.body = c.p.withSampling(c.body, c.backend, c.name, c.caller)
+			var notes []string
+			c.body, notes = c.p.withSampling(c.body, c.backend, c.name, c.caller)
+			c.notes = append(c.notes, notes...)
 			return nil
 		}},
 		{name: "align", applies: func(c *chainCtx) bool { _, ok := c.alignKey(); return ok }, run: func(c *chainCtx) *stageError {

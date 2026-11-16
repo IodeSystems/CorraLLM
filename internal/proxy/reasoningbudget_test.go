@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/iodesystems/corrallm/internal/config"
@@ -73,7 +74,7 @@ func TestZeroFractionDisablesRatherThanSilences(t *testing.T) {
 		t.Errorf("got %d, want 0 meaning 'set nothing'", got)
 	}
 	body := []byte(`{"model":"m","messages":[]}`)
-	out, did := applyReasoningBudget(body, budgetCfg(0, 1024, 0), 188_000)
+	out, did, _ := applyReasoningBudget(body, budgetCfg(0, 1024, 0), 188_000)
 	if did {
 		t.Errorf("a zero fraction wrote a budget: %s", out)
 	}
@@ -94,7 +95,7 @@ func budgetOf(t *testing.T, body []byte) (float64, bool) {
 func TestTheCallersOwnBudgetStands(t *testing.T) {
 	for _, sent := range []string{"0", "500"} {
 		body := []byte(`{"model":"m","reasoning_budget_tokens":` + sent + `,"messages":[]}`)
-		out, did := applyReasoningBudget(body, budgetCfg(0.2, 1024, 0), 188_000)
+		out, did, _ := applyReasoningBudget(body, budgetCfg(0.2, 1024, 0), 188_000)
 		if did {
 			t.Errorf("overwrote the caller's budget of %s: %s", sent, out)
 		}
@@ -108,20 +109,20 @@ func TestNoBudgetOnANonThinkingRequest(t *testing.T) {
 	cfg := budgetCfg(0.2, 1024, 0)
 	cfg.Default = "instruct"
 	body := []byte(`{"model":"m","messages":[]}`)
-	if _, did := applyReasoningBudget(body, cfg, 188_000); did {
+	if _, did, _ := applyReasoningBudget(body, cfg, 188_000); did {
 		t.Error("set a budget on an instruct-default request")
 	}
 	// And when the caller explicitly turns thinking off, even under a thinking
 	// default.
 	off := []byte(`{"model":"m","chat_template_kwargs":{"enable_thinking":false},"messages":[]}`)
-	if _, did := applyReasoningBudget(off, budgetCfg(0.2, 1024, 0), 188_000); did {
+	if _, did, _ := applyReasoningBudget(off, budgetCfg(0.2, 1024, 0), 188_000); did {
 		t.Error("set a budget on a request that opted out of thinking")
 	}
 }
 
 func TestBudgetIsWrittenOnAThinkingRequest(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[]}`)
-	out, did := applyReasoningBudget(body, budgetCfg(0.2, 1024, 0), 188_000)
+	out, did, _ := applyReasoningBudget(body, budgetCfg(0.2, 1024, 0), 188_000)
 	if !did {
 		t.Fatal("no budget written on a thinking request")
 	}
@@ -136,5 +137,105 @@ func TestBudgetIsWrittenOnAThinkingRequest(t *testing.T) {
 func TestNoContextMeansNoBudget(t *testing.T) {
 	if got := reasoningBudgetFor(4_000, 0, &config.ReasoningBudget{FractionOfRemaining: 0.2}); got != 0 {
 		t.Errorf("got %d, want 0 when the context is unknown", got)
+	}
+}
+
+// ANSWER ROOM: the injected budget leaves at least the reserve under
+// max_tokens, and only corrallm's value moves.
+func TestInjectedBudgetLeavesAnswerReserve(t *testing.T) {
+	cfg := budgetCfg(0.2, 2048, 8192) // 188k context: 8192 before the clamp
+	body := []byte(`{"model":"m","max_tokens":6000,"messages":[]}`)
+	out, did, clamp := applyReasoningBudget(body, cfg, 188_000)
+	got, ok := budgetOf(t, out)
+	if !did || !ok || got != 6000-config.DefaultAnswerReserve {
+		t.Fatalf("budget = %v (did %v), want %d: %s", got, did, 6000-config.DefaultAnswerReserve, out)
+	}
+	if clamp == nil || clamp.From != 8192 || clamp.To != 3952 || clamp.MaxTokens != 6000 {
+		t.Errorf("clamp = %+v", clamp)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(out, &m)
+	if m["max_tokens"].(float64) != 6000 {
+		t.Errorf("max_tokens changed: %s", out)
+	}
+	// Room enough: no clamp.
+	out, _, clamp = applyReasoningBudget([]byte(`{"model":"m","max_tokens":20000,"messages":[]}`), cfg, 188_000)
+	if got, _ := budgetOf(t, out); got != 8192 || clamp != nil {
+		t.Errorf("budget = %v clamp %+v, want 8192 unclamped", got, clamp)
+	}
+	// No max_tokens: nothing to keep room under.
+	out, _, clamp = applyReasoningBudget([]byte(`{"model":"m","messages":[]}`), cfg, 188_000)
+	if got, _ := budgetOf(t, out); got != 8192 || clamp != nil {
+		t.Errorf("budget = %v clamp %+v without max_tokens", got, clamp)
+	}
+	// max_tokens at or under the reserve: no budget at all, as before.
+	if out, did, _ := applyReasoningBudget([]byte(`{"model":"m","max_tokens":2048,"messages":[]}`), cfg, 188_000); did {
+		t.Errorf("injected a budget that leaves no room: %s", out)
+	}
+	// A configured reserve, and a negative one turning it off.
+	cfg.ReasoningBudget.AnswerReserve = 1000
+	out, _, _ = applyReasoningBudget(body, cfg, 188_000)
+	if got, _ := budgetOf(t, out); got != 5000 {
+		t.Errorf("budget = %v, want 5000 with answerReserve 1000", got)
+	}
+	cfg.ReasoningBudget.AnswerReserve = -1
+	out, _, clamp = applyReasoningBudget(body, cfg, 188_000)
+	if got, _ := budgetOf(t, out); got != 6000 || clamp == nil {
+		t.Errorf("budget = %v, want 6000 (max_tokens) with the reserve off", got)
+	}
+}
+
+// A caller's own budget that leaves too little is reported, never changed.
+func TestCallerBudgetShortIsReportedNotChanged(t *testing.T) {
+	cfg := budgetCfg(0.2, 2048, 8192)
+	cases := map[string]struct {
+		left  int
+		short bool
+	}{
+		`{"reasoning_budget_tokens":3000,"max_tokens":4000}`:            {1000, true},
+		`{"reasoning_budget_tokens":3000,"max_completion_tokens":4000}`: {1000, true},
+		`{"reasoning_budget_tokens":1000,"max_tokens":4000}`:            {0, false},
+		`{"reasoning_budget_tokens":0,"max_tokens":100}`:                {0, false}, // 0 = do not think
+		`{"reasoning_budget_tokens":3000}`:                              {0, false},
+		`{"max_tokens":100}`:                                            {0, false},
+	}
+	for in, want := range cases {
+		left, short := callerAnswerRoom([]byte(in), cfg)
+		if left != want.left || short != want.short {
+			t.Errorf("%s: got (%d, %v), want %+v", in, left, short, want)
+		}
+	}
+	// Default reserve with no budget config at all.
+	if _, short := callerAnswerRoom([]byte(`{"reasoning_budget_tokens":3000,"max_tokens":4000}`), &config.SamplingConfig{}); !short {
+		t.Error("no default reserve without a reasoningBudget config")
+	}
+
+	p := &Proxy{}
+	body := []byte(`{"model":"m","reasoning_budget_tokens":3000,"max_tokens":4000,"messages":[]}`)
+	out, notes := p.withSampling(body, config.Model{Sampling: cfg}, "m", config.Caller{Key: "k"})
+	if b, _ := budgetOf(t, out); b != 3000 || !strings.Contains(string(out), `"max_tokens":4000`) {
+		t.Errorf("caller's request changed: %s", out)
+	}
+	if strings.Join(notes, ";") != "reasoning-budget-short answer_room=1000" {
+		t.Errorf("notes = %q", notes)
+	}
+}
+
+func TestWithSamplingNotesTheClamp(t *testing.T) {
+	p := &Proxy{}
+	body := []byte(`{"model":"m","max_tokens":6000,"messages":[]}`)
+	_, notes := p.withSampling(body, config.Model{Sampling: budgetCfg(0.2, 2048, 8192), ContextPerRequest: 188_000}, "m", config.Caller{Key: "k"})
+	if strings.Join(notes, ";") != "reasoning-budget-clamped from=8192 to=3952" {
+		t.Errorf("notes = %q", notes)
+	}
+}
+
+func TestBudgetLogIsRateLimitedPerKeyAndModel(t *testing.T) {
+	p := &Proxy{}
+	if !p.budgetLogDue("short", "k", "m") || p.budgetLogDue("short", "k", "m") {
+		t.Error("second line within the window was not suppressed")
+	}
+	if !p.budgetLogDue("short", "k2", "m") || !p.budgetLogDue("short", "k", "m2") || !p.budgetLogDue("clamp", "k", "m") {
+		t.Error("a different key, model or kind was suppressed")
 	}
 }

@@ -79,6 +79,10 @@ type Proxy struct {
 	slotWarnMu sync.Mutex
 	slotWarn   map[string][2]int
 
+	// budgetLog is the last time a reasoning-budget line was logged per
+	// kind+key+model (budgetLogEvery).
+	budgetLog sync.Map
+
 	// slotAff is the per-model llama.cpp slot occupancy for slot affinity
 	// (P75 N9, slotaffinity.go). Used only for models with slotAffinity on.
 	slotAff slotAssigner
@@ -2940,9 +2944,19 @@ func (p *Proxy) handleUpstream(w http.ResponseWriter, r *http.Request) {
 // chat body bound for it. Per candidate, not per requested name: a profile
 // belongs to the MODEL. Keyed on the requested name, it was skipped for every
 // alias and lane — 98% of the Swift model's traffic in the week to 10-27.
-func (p *Proxy) withSampling(body []byte, backend config.Model, name string, caller config.Caller) []byte {
+func (p *Proxy) withSampling(body []byte, backend config.Model, name string, caller config.Caller) ([]byte, []string) {
 	if backend.Sampling == nil {
-		return body
+		return body, nil
+	}
+	var notes []string
+	// The caller's own budget, before corrallm adds one: an explicit choice
+	// is never changed, only reported.
+	if left, short := callerAnswerRoom(body, backend.Sampling); short {
+		notes = append(notes, fmt.Sprintf("reasoning-budget-short answer_room=%d", left))
+		if p.budgetLogDue("short", caller.Key, name) {
+			slog.Warn(fmt.Sprintf("reasoning budget leaves %d tokens for the answer", left),
+				"key", caller.Key, "model", name, "answerReserve", backend.Sampling.ReasoningBudget.Reserve())
+		}
 	}
 	if nb, did := applySamplingProfile(body, backend.Sampling); did {
 		body = nb
@@ -2953,11 +2967,32 @@ func (p *Proxy) withSampling(body []byte, backend config.Model, name string, cal
 	// the prompt has not used — the proxy is the only party holding both
 	// numbers: the caller does not know the model's window, and the launch
 	// flag cannot see the request.
-	if nb, did := applyReasoningBudget(body, backend.Sampling, backend.ContextPerRequest); did {
+	if nb, did, clamp := applyReasoningBudget(body, backend.Sampling, backend.ContextPerRequest); did {
 		body = nb
 		slog.Debug("reasoning budget set", "model", name, "bodyBytes", len(body))
+		if clamp != nil {
+			notes = append(notes, fmt.Sprintf("reasoning-budget-clamped from=%d to=%d", clamp.From, clamp.To))
+			if p.budgetLogDue("clamp", caller.Key, name) {
+				slog.Info("reasoning budget clamped to keep answer reserve", "key", caller.Key, "model", name,
+					"from", clamp.From, "to", clamp.To, "maxTokens", clamp.MaxTokens)
+			}
+		}
 	}
-	return body
+	return body, notes
+}
+
+// budgetLogEvery is how often one kind of reasoning-budget line is logged per
+// key and model. Every request still gets its activity note.
+const budgetLogEvery = 10 * time.Minute
+
+func (p *Proxy) budgetLogDue(kind, key, model string) bool {
+	k := kind + "\x00" + key + "\x00" + model
+	now := time.Now()
+	if v, ok := p.budgetLog.Load(k); ok && now.Sub(v.(time.Time)) < budgetLogEvery {
+		return false
+	}
+	p.budgetLog.Store(k, now)
+	return true
 }
 
 // handleCountTokens answers POST /v1/messages/count_tokens (Anthropic's shape;
@@ -3290,7 +3325,8 @@ type modelReasoning struct {
 	ThinkingEffort  string   `json:"thinking_effort,omitempty"` // --reasoning-effort, if launched with one
 	// ThinkingBudget is the cap corrallm adds to a thinking request that
 	// sends no reasoning_budget_tokens: fraction of the context the prompt
-	// leaves, at least min (else no cap), at most max (0 = none).
+	// leaves, at least min (else no cap), at most max (0 = none), and at
+	// most max_tokens − answer_reserve.
 	ThinkingBudget *modelReasoningBudget `json:"thinking_budget,omitempty"`
 }
 
@@ -3298,6 +3334,9 @@ type modelReasoningBudget struct {
 	FractionOfRemaining float64 `json:"fraction_of_remaining"`
 	Min                 int     `json:"min,omitempty"`
 	Max                 int     `json:"max,omitempty"`
+	// AnswerReserve is the tokens the injected budget leaves under max_tokens
+	// for the answer (effective value; 0 = none).
+	AnswerReserve int `json:"answer_reserve"`
 }
 
 var (
@@ -3336,7 +3375,8 @@ func reasoningOf(mc config.Model) *modelReasoning {
 	}
 	if mc.Sampling != nil && mc.Sampling.ReasoningBudget != nil && mc.Sampling.ReasoningBudget.FractionOfRemaining > 0 {
 		b := mc.Sampling.ReasoningBudget
-		r.ThinkingBudget = &modelReasoningBudget{FractionOfRemaining: b.FractionOfRemaining, Min: b.Min, Max: b.Max}
+		r.ThinkingBudget = &modelReasoningBudget{FractionOfRemaining: b.FractionOfRemaining, Min: b.Min, Max: b.Max,
+			AnswerReserve: b.Reserve()}
 	}
 	return r
 }

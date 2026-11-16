@@ -2234,6 +2234,28 @@ type ReasoningBudget struct {
 	// Max caps the share on a very large window, where a fifth of the remaining
 	// context can still be more thinking than any answer justifies. 0 = no cap.
 	Max int `yaml:"max,omitempty"`
+	// AnswerReserve is the room, in tokens, the injected budget leaves for the
+	// answer under the request's max_tokens: the budget is lowered so that
+	// max_tokens − budget ≥ AnswerReserve. Without it a forced </think> can
+	// land on the last token and the reply is empty. 0 = the default
+	// (DefaultAnswerReserve); negative = no reserve.
+	AnswerReserve int `yaml:"answerReserve,omitempty"`
+}
+
+// DefaultAnswerReserve is AnswerReserve when the config leaves it unset.
+const DefaultAnswerReserve = 2048
+
+// Reserve is the effective answer reserve in tokens; 0 means none. Nil-safe:
+// a model with no budget config still gets the default reserve for the
+// check on a caller's own budget.
+func (b *ReasoningBudget) Reserve() int {
+	switch {
+	case b == nil || b.AnswerReserve == 0:
+		return DefaultAnswerReserve
+	case b.AnswerReserve < 0:
+		return 0
+	}
+	return b.AnswerReserve
 }
 
 // ProfileFor returns the profile for a mode: thinking when think is true.

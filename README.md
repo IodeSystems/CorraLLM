@@ -39,6 +39,23 @@ It runs in production today, fronting a mixed embeddings and chat workload.
   - `cache_slots_typical`: the same count at the last hour's mean entry size
     (patched `/metrics`, at least 3 cached entries); absent before that. It
     moves with how long conversations run.
+  - `thinking_budget`: the `reasoning_budget_tokens` corrallm injects into a
+    thinking request that sends none (config `sampling.reasoningBudget`):
+    `fraction_of_remaining` of the context the prompt leaves, at least `min`
+    (else no budget), at most `max`, and at most `max_tokens −
+    answer_reserve` (config `answerReserve`, default 2048 tokens, negative =
+    off). llama-server forces `</think>` when the budget runs out and the
+    answer gets what `max_tokens` has left, so a budget near `max_tokens` ends
+    in an empty reply. corrallm only ever lowers its OWN injected value: the
+    caller's `max_tokens` and `reasoning_budget_tokens` are never changed.
+    When it lowers it, it logs a rate-limited INFO (key, model, from, to,
+    max_tokens) and notes `reasoning-budget-clamped from=N to=M` on the
+    activity row. When `max_tokens` is not above the reserve, no budget is
+    injected. A caller that sends both fields with less than the reserve
+    between them is served as sent, with a rate-limited WARN per key+model
+    ("reasoning budget leaves N tokens for the answer") and the note
+    `reasoning-budget-short answer_room=N`.
+
   Chat replies (`/v1/chat/completions`, non-streamed and the streamed usage
   chunk) carry `usage.completion_tokens_details.reasoning_tokens`, OpenAI's
   field, with the count the activity row stores, when corrallm measured it

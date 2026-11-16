@@ -177,6 +177,12 @@ func reasoningBudgetFor(bodyBytes, contextTokens int, cfg *config.ReasoningBudge
 	return budget
 }
 
+// budgetClamp records that corrallm lowered its OWN injected budget to keep
+// the answer reserve under max_tokens.
+type budgetClamp struct {
+	From, To, MaxTokens int
+}
+
 // applyReasoningBudget fills in reasoning_budget_tokens when the request is
 // going to think and did not say how long for.
 //
@@ -188,32 +194,79 @@ func reasoningBudgetFor(bodyBytes, contextTokens int, cfg *config.ReasoningBudge
 // thinking signal to llama.cpp (a positive budget implies reasoning), so writing
 // one onto an instruct request would turn thinking ON for a caller who never
 // asked, which is a behaviour change wearing the costume of a limit.
-func applyReasoningBudget(body []byte, cfg *config.SamplingConfig, contextTokens int) ([]byte, bool) {
+//
+// ANSWER ROOM: with max_tokens set, the budget is lowered so that max_tokens −
+// budget ≥ the reserve. llama-server forces </think> when the budget runs out
+// and the answer gets what max_tokens has left; a budget near max_tokens ends
+// in an empty reply. The clamp ignores Min (an answer beats a longer thought).
+// When max_tokens is not above the reserve no budget is injected, as before:
+// nothing can leave the room. Only corrallm's own value is lowered; the
+// caller's max_tokens is never touched. The clamp is returned for logging.
+func applyReasoningBudget(body []byte, cfg *config.SamplingConfig, contextTokens int) ([]byte, bool, *budgetClamp) {
 	if cfg == nil || cfg.ReasoningBudget == nil {
-		return body, false
+		return body, false, nil
 	}
 	var req map[string]any
 	if json.Unmarshal(body, &req) != nil {
-		return body, false
+		return body, false, nil
 	}
 	if _, present := req["reasoning_budget_tokens"]; present {
-		return body, false
+		return body, false, nil
 	}
 	think, stated := requestWantsThinking(req)
 	if !stated {
 		think = cfg.DefaultThinking()
 	}
 	if !think {
-		return body, false
+		return body, false, nil
 	}
 	budget := reasoningBudgetFor(len(body), contextTokens, cfg.ReasoningBudget)
 	if budget <= 0 {
-		return body, false
+		return body, false, nil
+	}
+	var clamp *budgetClamp
+	if mt := requestMaxTokens(body); mt > 0 {
+		room := mt - cfg.ReasoningBudget.Reserve()
+		if room <= 0 {
+			return body, false, nil
+		}
+		if budget > room {
+			clamp = &budgetClamp{From: budget, To: room, MaxTokens: mt}
+			budget = room
+		}
 	}
 	req["reasoning_budget_tokens"] = budget
 	out, err := json.Marshal(req)
 	if err != nil {
-		return body, false
+		return body, false, nil
 	}
-	return out, true
+	return out, true, clamp
+}
+
+// callerAnswerRoom reports the answer room a CALLER's own budget leaves:
+// max_tokens − reasoning_budget_tokens, when both are set and that is below
+// the reserve. The request is not changed — an explicit choice stands — so
+// this is only for a warning.
+func callerAnswerRoom(body []byte, cfg *config.SamplingConfig) (int, bool) {
+	var req map[string]any
+	if json.Unmarshal(body, &req) != nil {
+		return 0, false
+	}
+	b, ok := req["reasoning_budget_tokens"].(float64)
+	if !ok || b <= 0 {
+		return 0, false // absent, or 0 = "do not think"
+	}
+	mt := requestMaxTokens(body)
+	if mt <= 0 {
+		return 0, false
+	}
+	var rb *config.ReasoningBudget
+	if cfg != nil {
+		rb = cfg.ReasoningBudget
+	}
+	left := mt - int(b)
+	if left >= rb.Reserve() {
+		return 0, false
+	}
+	return left, true
 }
