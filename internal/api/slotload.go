@@ -51,12 +51,16 @@ type SlotLoadWindow struct {
 
 // SlotLoadRow is one local model, or the box total.
 type SlotLoadRow struct {
-	Model       string           `json:"model" doc:"Served model name; empty on the box total."`
-	Slots       int              `json:"slots" doc:"Admission slots: the scheduler's live capacity once the model has been admitted to, else the config's maxConcurrent (default 1)."`
-	SlotsSource string           `json:"slotsSource" doc:"scheduler | config — where slots came from. Empty on the box total."`
-	Busy        int              `json:"busy" doc:"Slots in service right now."`
-	Waiting     int              `json:"waiting" doc:"Requests queued for a slot right now."`
-	Windows     []SlotLoadWindow `json:"windows" doc:"One entry per rolling window, shortest first."`
+	Model             string           `json:"model" doc:"Served model name; empty on the box total."`
+	Slots             int              `json:"slots" doc:"Admission slots: the scheduler's live capacity once the model has been admitted to, else the config's maxConcurrent (default 1)."`
+	SlotsSource       string           `json:"slotsSource" doc:"scheduler | config | backend — where slots came from: the scheduler's live capacity, config maxConcurrent, or (maxConcurrent unset) the llama-server's /props total_slots. Empty on the box total."`
+	CacheSlots        int              `json:"cacheSlots" doc:"Conversations guaranteed to stay warm: slots + host prompt-cache entries that fit even if each grows to the per-slot context cap. Detected from the backend's startup log, cmd and /metrics. 0 = unknown. Summed on the box total."`
+	CacheSlotsTypical int              `json:"cacheSlotsTypical" doc:"Conversations kept warm at the last hour's mean cache-entry size: slots + cache budget ÷ mean entry. 0 = unknown (fewer than 3 cached entries, or no cache metrics). Summed on the box total."`
+	CacheChurnPct     float64          `json:"cacheChurnPct" doc:"Percent (0–100) of the last hour's prompt-cache evictions whose entry was under 5 minutes old: high means warm conversations are pushed out while still in use. -1 = the backend exposes no eviction-age histogram, or the box total."`
+	CacheEvictions    int              `json:"cacheEvictions" doc:"Prompt-cache evictions in the last hour behind cacheChurnPct (count)."`
+	Busy              int              `json:"busy" doc:"Slots in service right now."`
+	Waiting           int              `json:"waiting" doc:"Requests queued for a slot right now."`
+	Windows           []SlotLoadWindow `json:"windows" doc:"One entry per rolling window, shortest first."`
 }
 
 // SlotLoadOutput is the per-model slot load plus a box total.
@@ -303,7 +307,19 @@ func (h *Handlers) SlotLoad(_ context.Context, _ *SlotLoadInput) (*SlotLoadOutpu
 		if !local(name) {
 			continue
 		}
-		r := SlotLoadRow{Model: name, Slots: cfg.Models[name].Slots(), SlotsSource: "config"}
+		r := SlotLoadRow{Model: name, Slots: cfg.Models[name].Slots(), SlotsSource: "config", CacheChurnPct: -1}
+		if h.Proxy != nil {
+			mc := cfg.Models[name]
+			if n := h.Proxy.AdmitSlots(name, mc); mc.MaxConcurrent <= 0 && n != r.Slots {
+				r.Slots, r.SlotsSource = n, "backend"
+			}
+			if c, ok := h.Proxy.DetectedCapacity(name, mc); ok {
+				r.CacheSlots, r.CacheSlotsTypical = c.CacheSlots, c.CacheSlotsTypical
+				if c.Churn >= 0 {
+					r.CacheChurnPct, r.CacheEvictions = math.Round(c.Churn*1000)/10, int(c.ChurnEvictions)
+				}
+			}
+		}
 		if b, ok := byBackend[name]; ok {
 			if b.capacity > 0 {
 				r.Slots, r.SlotsSource = b.capacity, "scheduler"
@@ -324,6 +340,8 @@ func (h *Handlers) SlotLoad(_ context.Context, _ *SlotLoadInput) (*SlotLoadOutpu
 			}
 		}
 		total.Slots += r.Slots
+		total.CacheSlots += r.CacheSlots
+		total.CacheSlotsTypical += r.CacheSlotsTypical
 		total.Busy += r.Busy
 		total.Waiting += r.Waiting
 		out.Body.Models = append(out.Body.Models, r)
@@ -331,6 +349,7 @@ func (h *Handlers) SlotLoad(_ context.Context, _ *SlotLoadInput) (*SlotLoadOutpu
 	for i, mins := range slotLoadWindows {
 		total.Windows = append(total.Windows, windowOfAgg(totalAggs[i], mins, total.Slots))
 	}
+	total.CacheChurnPct = -1
 	out.Body.Total = total
 	if out.Body.Models == nil {
 		out.Body.Models = []SlotLoadRow{}

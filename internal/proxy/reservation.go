@@ -62,7 +62,7 @@ func (p *Proxy) reserveCreate(w http.ResponseWriter, r *http.Request) {
 	if slots < 1 {
 		slots = 1
 	}
-	if capSlots := primary.Model.Slots(); slots > capSlots {
+	if capSlots := p.AdmitSlots(primary.Name, primary.Model); slots > capSlots {
 		jsonErr(w, http.StatusBadRequest, fmt.Sprintf("slots=%d exceeds backend capacity %d", slots, capSlots))
 		return
 	}

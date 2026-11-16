@@ -3818,11 +3818,19 @@ type corrallm_SlotLoadOutputBody {
 type corrallm_SlotLoadRow {
   """Slots in service right now."""
   busy: Long!
+  """Percent (0–100) of the last hour's prompt-cache evictions whose entry was under 5 minutes old: high means warm conversations are pushed out while still in use. -1 = the backend exposes no eviction-age histogram, or the box total."""
+  cacheChurnPct: Float!
+  """Prompt-cache evictions in the last hour behind cacheChurnPct (count)."""
+  cacheEvictions: Long!
+  """Conversations guaranteed to stay warm: slots + host prompt-cache entries that fit even if each grows to the per-slot context cap. Detected from the backend's startup log, cmd and /metrics. 0 = unknown. Summed on the box total."""
+  cacheSlots: Long!
+  """Conversations kept warm at the last hour's mean cache-entry size: slots + cache budget ÷ mean entry. 0 = unknown (fewer than 3 cached entries, or no cache metrics). Summed on the box total."""
+  cacheSlotsTypical: Long!
   """Served model name; empty on the box total."""
   model: String!
   """Admission slots: the scheduler's live capacity once the model has been admitted to, else the config's maxConcurrent (default 1)."""
   slots: Long!
-  """scheduler | config — where slots came from. Empty on the box total."""
+  """scheduler | config | backend — where slots came from: the scheduler's live capacity, config maxConcurrent, or (maxConcurrent unset) the llama-server's /props total_slots. Empty on the box total."""
   slotsSource: String!
   """Requests queued for a slot right now."""
   waiting: Long!

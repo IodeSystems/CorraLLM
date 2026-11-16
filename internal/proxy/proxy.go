@@ -74,6 +74,11 @@ type Proxy struct {
 	cacheTracker *cacheattr.Tracker
 	cachePoller  *cacheattr.Poller
 
+	// slotWarn remembers the last config/detected slot mismatch logged per
+	// model, so the warning fires once per change (detectedslots.go).
+	slotWarnMu sync.Mutex
+	slotWarn   map[string][2]int
+
 	// slotAff is the per-model llama.cpp slot occupancy for slot affinity
 	// (P75 N9, slotaffinity.go). Used only for models with slotAffinity on.
 	slotAff slotAssigner
@@ -3092,7 +3097,13 @@ func (p *Proxy) serveModels(w http.ResponseWriter, req *http.Request, only strin
 		Members       []string `json:"members,omitempty"`        // lane member model names, in fallback order
 		Persistent    bool     `json:"persistent,omitempty"`     // pinned + preloaded
 		ContextLength int      `json:"context_length,omitempty"` // one request's window: n_ctx (if resident), capped by contextPerRequest
-		Slots         int      `json:"slots,omitempty"`          // admission concurrency the scheduler grants: config maxConcurrent, not a spawn-time tuned value
+		Slots         int      `json:"slots,omitempty"`          // admission concurrency the scheduler grants (AdmitSlots): config maxConcurrent, else the backend's total_slots
+		// CacheSlots: conversations guaranteed to stay warm (slots + host
+		// prompt-cache entries that fit even at the per-slot context cap).
+		// CacheSlotsTypical: the same at the hour's mean entry size. Both
+		// detected from the running llama-server; absent when unknown.
+		CacheSlots        int `json:"cache_slots,omitempty"`
+		CacheSlotsTypical int `json:"cache_slots_typical,omitempty"`
 		// Aliases: other names that resolve to this model (config `aliases`).
 		// A request naming one is served by this entry; the entry's id stays
 		// canonical. Absent when there are none. Lanes carry none.
@@ -3146,7 +3157,7 @@ func (p *Proxy) serveModels(w http.ResponseWriter, req *http.Request, only strin
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: "absent", Quality: mc.Quality, Type: mc.Type, Kind: "model",
 			Persistent:     mc.Persistent,
-			Slots:          mc.Slots(), // what sched.Admit grants (see admit); a resident process's tuned/banner count may differ
+			Slots:          p.AdmitSlots(name, mc), // what sched.Admit grants (see admit)
 			Aliases:        mc.Aliases,
 			Modalities:     mc.EffectiveModalities(name, p.cost.IsAudioType(mc.Type)),
 			Outputs:        config.ModelIO(name, mc, p.cost.IsAudioType(mc.Type)).Out,
@@ -3165,6 +3176,9 @@ func (p *Proxy) serveModels(w http.ResponseWriter, req *http.Request, only strin
 			e.State = r.State
 		}
 		e.ContextLength = requestWindow(mc, name, resident)
+		if c, ok := p.DetectedCapacity(name, mc); ok {
+			e.CacheSlots, e.CacheSlotsTypical = c.CacheSlots, c.CacheSlotsTypical
+		}
 		// Paused outranks everything above: "absent" would say a request could
 		// load it, and an extension's paused model would otherwise inherit its
 		// still-running sibling's "ready". The model stays LISTED — it is still
@@ -3223,14 +3237,17 @@ func (p *Proxy) serveModels(w http.ResponseWriter, req *http.Request, only strin
 				state = r.State
 			}
 		}
-		laneSlots := 0
+		laneSlots, laneCache, laneTypical := 0, 0, 0
 		if len(cands) > 0 {
-			laneSlots = cands[0].Model.Slots() // primary member's admitted capacity
+			laneSlots = p.AdmitSlots(cands[0].Name, cands[0].Model) // primary member's admitted capacity
+			if c, ok := p.DetectedCapacity(cands[0].Name, cands[0].Model); ok {
+				laneCache, laneTypical = c.CacheSlots, c.CacheSlotsTypical
+			}
 		}
 		out.Data = append(out.Data, model{
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: state, Quality: config.MaxQuality(cands), Kind: "lane",
-			Members: members, Slots: laneSlots, Modalities: modalities, Outputs: outputs, OutputFormats: outputFormats, Capability: capability,
+			Members: members, Slots: laneSlots, CacheSlots: laneCache, CacheSlotsTypical: laneTypical, Modalities: modalities, Outputs: outputs, OutputFormats: outputFormats, Capability: capability,
 			modelReasoning: reasoning, ContextLength: laneCtx,
 		})
 	}
@@ -3797,7 +3814,7 @@ func (p *Proxy) admit(ctx context.Context, name string, backend config.Model, gr
 		}
 		return err
 	}
-	release, reqCtx, err := p.sched.Admit(ctx, name, backend.Type, backend.Slots(), group, weight, interruptible, stage)
+	release, reqCtx, err := p.sched.Admit(ctx, name, backend.Type, p.AdmitSlots(name, backend), group, weight, interruptible, stage)
 	if err != nil {
 		return nil, nil, named(err, name)
 	}

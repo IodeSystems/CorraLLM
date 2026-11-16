@@ -16,11 +16,33 @@ It runs in production today, fronting a mixed embeddings and chat workload.
 - **OpenAI-compatible proxy** — `/v1/chat/completions`, `/v1/completions`,
   `/v1/embeddings`, `/v1/rerank`, `/v1/models`, and the audio endpoints (STT, TTS,
   realtime, with optional diarization; see below). Streaming is preserved.
-  `/v1/models` also carries corrallm fields per entry: `state`, `slots` (the
-  concurrency admission grants: config `maxConcurrent`), `context_length`,
-  `thinking_*`, and `aliases` (other names that resolve to the entry, from the
-  model's `aliases:`; aliases get no entries of their own). `GET /v1/models/{id}`
-  returns one entry; an alias id returns its target's entry under the real id.
+  `/v1/models` also carries corrallm fields per entry: `state`, `slots`,
+  `cache_slots`, `cache_slots_typical`, `context_length`, `thinking_*`, and
+  `aliases` (other names that resolve to the entry, from the model's `aliases:`;
+  aliases get no entries of their own). `GET /v1/models/{id}` returns one entry;
+  an alias id returns its target's entry under the real id. A lane reports its
+  primary member's counts.
+  - `slots`: concurrent requests admission grants. Config `maxConcurrent` when
+    set; a running llama-server that reports a different `/props` `total_slots`
+    is logged as a WARN and config still wins. Unset, the backend's
+    `total_slots` once it has reported, else 1.
+  - `cache_slots`: conversations guaranteed to stay warm, even if every one
+    grows to the per-slot context cap: `slots + floor(cache_budget /
+    worst_entry)`, where `worst_entry = recurrent_state + n_ctx_slot ×
+    kv_bytes_per_token + ctx_checkpoints × checkpoint_bytes` (one host
+    prompt-cache entry at the cap, target and draft contexts). Every input is
+    read from the backend's startup log, its cmd, and `/metrics`; none is
+    configured. The budget is the smallest of the logged cache limit,
+    `--cache-ram`, and the patched `/metrics` cache bytes + free arena. When
+    no checkpoint size is known (dense model, none logged yet) checkpoints are
+    left out and the count may overstate. Absent when an input is unknown.
+  - `cache_slots_typical`: the same count at the last hour's mean entry size
+    (patched `/metrics`, at least 3 cached entries); absent before that. It
+    moves with how long conversations run.
+
+  Clients should size their pools from `cache_slots`: keep at most that many
+  live conversations and none is prefilled cold again. Both counts change when
+  the model's context length or cache settings change.
 - **Model lifecycle** — starts a backend's `cmd` on demand and waits for a real
   health check (llama-server's `/health`, not just an open port). Concurrent cold
   loads are coalesced, and process groups are cleaned up on shutdown.
