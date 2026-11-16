@@ -859,7 +859,15 @@ MTP n-max 5 lost to 4 (reverted 08:44:21). p11 = port of PR #31031 (draft vocab 
 build 20261116-171030; canary pending. corrallm v0.3.0-106 (e6fffe1, 389f3ee): usage.completion_tokens_details.
 reasoning_tokens on chat completions; answer-room guard (answerReserve 2048; only lowers corrallm's own injected budget, notes
 reasoning-budget-clamped / reasoning-budget-short; life-raglit leaves 800). No budget-forcing field exists in the wild.
-agentkit reasoning-cut repair plan (hidden notification + reasoning off on the repair round; prefill deferred) awaits owner OK. p9 not bit-identical (expected: fused dequant rounding) → quality
+agentkit reasoning-cut repair plan (hidden notification + reasoning off on the repair round; prefill deferred) awaits owner OK.
+11-16 results: OCR models were already on the 3080 (11-14 Swift eviction = scheduler bug fixed 178a885). MTP n-max 5 vs 4 (06:48-
+07:37 vs 07:53-08:42): 3-busy 157.5 → 122.8 tok/s (−22 %), acceptance 0.650 → 0.563 → reverted to 4 (08:49:08). ✅ p11 draft
+vocab (swift-aw4-32k.json, 32,768 ids, 99.9 % held-out coverage; PR mix48 list 91.8 %) KEPT: 09:13-10:13 vs 10:29-11:29: 3-busy
+111.2 → 118.4 tok/s (+6.5 %, one window each, ±20 % row noise → not proven), acceptance 0.639 → 0.653, decode p50 61.7 → 66.8.
+Live since 10:19:48 on build 20261116-171030. Fork PR #22 (iode/13-draft-vocab-trim). Note: output tok/s fell from ~158 (morning)
+to ~110 after the reasoning cap (shorter replies) → judge throughput by turns/hour from now on, not tok/s.
+BUG (corrallm llama.cpp recipe): `git clean -xdf` runs AFTER applying patches → files a patch ADDS are deleted (p11's test +
+script dropped from production patch; a patch adding a new source file would break the build). Fix = clean before apply. p9 not bit-identical (expected: fused dequant rounding) → quality
 verdict = KLD at 32k/64k in a quiet window.
 BUG (corrallm): storing a changed Swift cmd before a daemon handoff → new daemon restarted Swift UNDRAINED (17:51:42).
 corrallm 0bb20ab: GGML_CUDA_FA_ALL_QUANTS env-overridable (default ON), deployed v0.3.0-99. Build timeout 2 h hard-coded
