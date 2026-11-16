@@ -1,0 +1,135 @@
+# HELP llamacpp:prompt_tokens_total Number of prompt tokens processed, excluding cached tokens
+# TYPE llamacpp:prompt_tokens_total counter
+llamacpp:prompt_tokens_total 6.41207e+06
+# HELP llamacpp:prompt_tokens_cached_total Number of prompt tokens reused from the cache
+# TYPE llamacpp:prompt_tokens_cached_total counter
+llamacpp:prompt_tokens_cached_total 2.69122e+07
+# HELP llamacpp:prompt_seconds_total Total time spent processing prompts
+# TYPE llamacpp:prompt_seconds_total counter
+llamacpp:prompt_seconds_total 3066.73
+# HELP llamacpp:tokens_predicted_total Number of generation tokens processed
+# TYPE llamacpp:tokens_predicted_total counter
+llamacpp:tokens_predicted_total 1.00008e+06
+# HELP llamacpp:tokens_predicted_seconds_total Total time spent generating tokens
+# TYPE llamacpp:tokens_predicted_seconds_total counter
+llamacpp:tokens_predicted_seconds_total 17845
+# HELP llamacpp:n_decode_total Total number of llama_decode() calls, excluding speculative decoding and multimodal decoding
+# TYPE llamacpp:n_decode_total counter
+llamacpp:n_decode_total 174310
+# HELP llamacpp:n_tokens_max Largest observed sequence length (prompt + generation)
+# TYPE llamacpp:n_tokens_max counter
+llamacpp:n_tokens_max 70645
+# HELP llamacpp:spec_decode_num_draft_tokens_total Speculative: Total draft tokens generated
+# TYPE llamacpp:spec_decode_num_draft_tokens_total counter
+llamacpp:spec_decode_num_draft_tokens_total 1.10966e+06
+# HELP llamacpp:spec_decode_num_accepted_tokens_total Speculative: Total draft tokens accepted by the target model
+# TYPE llamacpp:spec_decode_num_accepted_tokens_total counter
+llamacpp:spec_decode_num_accepted_tokens_total 723099
+# HELP llamacpp:spec_decode_num_drafts_total Speculative: Total speculative decoding verification steps
+# TYPE llamacpp:spec_decode_num_drafts_total counter
+llamacpp:spec_decode_num_drafts_total 277416
+# HELP llamacpp:prompt_tokens_seconds Average prompt throughput in tokens/s
+# TYPE llamacpp:prompt_tokens_seconds gauge
+llamacpp:prompt_tokens_seconds 1546.3
+# HELP llamacpp:predicted_tokens_seconds Average generation throughput in tokens/s
+# TYPE llamacpp:predicted_tokens_seconds gauge
+llamacpp:predicted_tokens_seconds 67.5149
+# HELP llamacpp:requests_processing Number of requests processing
+# TYPE llamacpp:requests_processing gauge
+llamacpp:requests_processing 2
+# HELP llamacpp:requests_deferred Number of requests deferred
+# TYPE llamacpp:requests_deferred gauge
+llamacpp:requests_deferred 0
+# HELP llamacpp:n_busy_slots_per_decode Average number of busy slots per llama_decode() call
+# TYPE llamacpp:n_busy_slots_per_decode gauge
+llamacpp:n_busy_slots_per_decode 1.62435
+# HELP llamacpp:prompt_cache_hits_total Prompt cache loads that restored a cached prompt into a slot
+# TYPE llamacpp:prompt_cache_hits_total counter
+llamacpp:prompt_cache_hits_total 195
+# HELP llamacpp:prompt_cache_misses_total Prompt cache loads that restored nothing (no usable entry, the slot's prompt was better, or the restore failed)
+# TYPE llamacpp:prompt_cache_misses_total counter
+llamacpp:prompt_cache_misses_total 68
+# HELP llamacpp:prompt_cache_matches_kept_total Prompt cache misses where an entry matched but the slot's own prompt was better (the entry's last use is refreshed)
+# TYPE llamacpp:prompt_cache_matches_kept_total counter
+llamacpp:prompt_cache_matches_kept_total 60
+# HELP llamacpp:prompt_cache_entries Number of prompt cache entries
+# TYPE llamacpp:prompt_cache_entries gauge
+llamacpp:prompt_cache_entries 12
+# HELP llamacpp:prompt_cache_bytes Prompt cache size in bytes (real allocated, a checkpoint shared by entries counted once)
+# TYPE llamacpp:prompt_cache_bytes gauge
+llamacpp:prompt_cache_bytes 2.74005e+10
+# HELP llamacpp:prompt_cache_compactions_total Host pool cache arena compactions (blocks moved to make one free extent instead of evicting)
+# TYPE llamacpp:prompt_cache_compactions_total counter
+llamacpp:prompt_cache_compactions_total 56
+# HELP llamacpp:prompt_cache_compactions_skipped_total Fragmented saves that did not compact: no window of movable blocks, or over LLAMA_HOST_POOL_COMPACT_MAX_MIB
+# TYPE llamacpp:prompt_cache_compactions_skipped_total counter
+llamacpp:prompt_cache_compactions_skipped_total 46
+# HELP llamacpp:prompt_cache_compaction_bytes_moved_total Bytes moved by host pool cache arena compactions
+# TYPE llamacpp:prompt_cache_compaction_bytes_moved_total counter
+llamacpp:prompt_cache_compaction_bytes_moved_total 1.09633e+11
+# HELP llamacpp:prompt_cache_compaction_seconds_total Time spent moving bytes in host pool cache arena compactions
+# TYPE llamacpp:prompt_cache_compaction_seconds_total counter
+llamacpp:prompt_cache_compaction_seconds_total 22.0891
+# HELP llamacpp:host_pool_arena_free_bytes Free bytes per host pool arena (LLAMA_HOST_POOL_RESERVE)
+# TYPE llamacpp:host_pool_arena_free_bytes gauge
+llamacpp:host_pool_arena_free_bytes{arena="cache"} 3636461568
+llamacpp:host_pool_arena_free_bytes{arena="slot"} 2097152
+# HELP llamacpp:host_pool_arena_largest_free_bytes Largest free extent per host pool arena (LLAMA_HOST_POOL_RESERVE)
+# TYPE llamacpp:host_pool_arena_largest_free_bytes gauge
+llamacpp:host_pool_arena_largest_free_bytes{arena="cache"} 901775360
+llamacpp:host_pool_arena_largest_free_bytes{arena="slot"} 2097152
+# HELP llamacpp:prompt_cache_evictions_total Prompt cache entries removed, by reason
+# TYPE llamacpp:prompt_cache_evictions_total counter
+llamacpp:prompt_cache_evictions_total{reason="budget"} 182
+llamacpp:prompt_cache_evictions_total{reason="fragmentation"} 46
+llamacpp:prompt_cache_evictions_total{reason="tokens"} 0
+llamacpp:prompt_cache_evictions_total{reason="superseded"} 0
+# HELP llamacpp:prompt_cache_evicted_age_seconds Time since last use of prompt cache entries evicted to make room (budget, fragmentation, tokens)
+# TYPE llamacpp:prompt_cache_evicted_age_seconds histogram
+llamacpp:prompt_cache_evicted_age_seconds_bucket{le="10"} 1
+llamacpp:prompt_cache_evicted_age_seconds_bucket{le="60"} 7
+llamacpp:prompt_cache_evicted_age_seconds_bucket{le="300"} 48
+llamacpp:prompt_cache_evicted_age_seconds_bucket{le="900"} 186
+llamacpp:prompt_cache_evicted_age_seconds_bucket{le="3600"} 225
+llamacpp:prompt_cache_evicted_age_seconds_bucket{le="21600"} 228
+llamacpp:prompt_cache_evicted_age_seconds_bucket{le="86400"} 228
+llamacpp:prompt_cache_evicted_age_seconds_bucket{le="+Inf"} 228
+llamacpp:prompt_cache_evicted_age_seconds_sum 161133
+llamacpp:prompt_cache_evicted_age_seconds_count 228
+# HELP llamacpp:xslot_attach_total Requests started from another slot's cells (cross-slot KV reuse)
+# TYPE llamacpp:xslot_attach_total counter
+llamacpp:xslot_attach_total 8
+# HELP llamacpp:xslot_tokens_reused_total Usable prefix tokens of the requests started from another slot's cells
+# TYPE llamacpp:xslot_tokens_reused_total counter
+llamacpp:xslot_tokens_reused_total 102176
+# HELP llamacpp:xslot_skipped_total Requests where another slot held a longer usable prefix but was not attached, by reason
+# TYPE llamacpp:xslot_skipped_total counter
+llamacpp:xslot_skipped_total{reason="source_starting"} 0
+llamacpp:xslot_skipped_total{reason="below_min"} 1
+llamacpp:xslot_skipped_total{reason="host_cache"} 16
+llamacpp:xslot_skipped_total{reason="not_unified"} 0
+llamacpp:xslot_skipped_total{reason="swa"} 0
+llamacpp:xslot_skipped_total{reason="ctx_shift"} 0
+llamacpp:xslot_skipped_total{reason="cache_reuse"} 0
+llamacpp:xslot_skipped_total{reason="lora"} 0
+# HELP llamacpp:prefix_ckpt_pinned_total Context checkpoints pinned at the start of the first user message
+# TYPE llamacpp:prefix_ckpt_pinned_total counter
+llamacpp:prefix_ckpt_pinned_total 160
+# HELP llamacpp:prefix_ckpt_restores_total Prompts resumed from a pinned prefix checkpoint
+# TYPE llamacpp:prefix_ckpt_restores_total counter
+llamacpp:prefix_ckpt_restores_total 17
+# HELP llamacpp:prefix_ckpt_tokens_reused_total Prompt tokens not processed again thanks to a pinned prefix checkpoint
+# TYPE llamacpp:prefix_ckpt_tokens_reused_total counter
+llamacpp:prefix_ckpt_tokens_reused_total 264334
+# HELP llamacpp:prefix_ckpt_boundary_restores_total Prompts resumed from a pinned user-boundary checkpoint
+# TYPE llamacpp:prefix_ckpt_boundary_restores_total counter
+llamacpp:prefix_ckpt_boundary_restores_total 0
+# HELP llamacpp:prefix_ckpt_cache_copies_total Prompt cache entries copied into a slot for their pinned prefix checkpoint
+# TYPE llamacpp:prefix_ckpt_cache_copies_total counter
+llamacpp:prefix_ckpt_cache_copies_total 1
+# HELP llamacpp:spec_decode_num_accepted_tokens_per_pos_total Accepted tokens per draft position
+# TYPE llamacpp:spec_decode_num_accepted_tokens_per_pos_total counter
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="0"} 238259
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="1"} 195738
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="2"} 158964
+llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position="3"} 130138

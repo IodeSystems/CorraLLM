@@ -652,12 +652,21 @@ func serve(ctx context.Context, o serveOpts) error {
 	cachePoller := cacheattr.NewPoller(func() []cacheattr.Target {
 		var out []cacheattr.Target
 		for _, ri := range mgr.RunningInstances() {
-			out = append(out, cacheattr.Target{Served: ri.Model, Instance: ri.Instance, BaseURL: ri.BaseURL})
+			g := ri.Geometry
+			out = append(out, cacheattr.Target{Served: ri.Model, Instance: ri.Instance, BaseURL: ri.BaseURL, Cmd: ri.Cmd,
+				Geometry: cacheattr.Geometry{NCtxSlot: g.NCtxSlot, KVCellBytes: g.KVCellBytes, RSSeqBytes: g.RSSeqBytes,
+					CheckpointBytes: g.CheckpointBytes, CacheRAMBytes: g.CacheRAMBytes}})
 		}
 		return out
 	}, 0)
 	cacheTracker := newCacheTracker(st, cachePoller)
-	mgr.SetEventRecorder(eventRecorder{st: st, note: cacheTracker.NoteEvent})
+	mgr.SetEventRecorder(eventRecorder{st: st, note: func(e store.BackendEvent) {
+		cacheTracker.NoteEvent(e)
+		// A backend just came up: read its slots now, not at the next tick.
+		if e.OK && (e.Kind == proc.EventStart || e.Kind == proc.EventAdopt) {
+			cachePoller.Poke()
+		}
+	}})
 	if o.healthTimeout > 0 {
 		mgr.SetHealthTimeout(o.healthTimeout)
 		slog.Info("health timeout overridden", "timeout", o.healthTimeout)

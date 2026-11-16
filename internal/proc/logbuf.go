@@ -28,7 +28,34 @@ var (
 	// so the total is n_ctx_slot × n_slots.
 	reNCtxSlot = regexp.MustCompile(`n_ctx_slot\s*=\s*(\d+)`)
 	reKVMiB    = regexp.MustCompile(`KV\s+\w+\s+size\s*=\s*([\d.]+)\s*MiB`)
+
+	// Memory geometry, for the size of one host prompt-cache entry (see
+	// MemGeometry). One line per context; the draft (MTP) context prints its
+	// own, and both are saved with each entry:
+	//   llama_kv_cache: size = 5984.00 MiB (180224 cells,  16 layers,  3/1 seqs), ...
+	//   llama_memory_recurrent: size = 2244.38 MiB (     3 cells,  64 layers,  3 seqs  4 rs_seq), ...
+	//   srv    load_model: prompt cache is enabled, size limit: 27648 MiB
+	//   slot create_check: id  0 | task 0 | created context checkpoint 1 of 8 (..., size = 149.646 MiB)
+	reKVCells   = regexp.MustCompile(`llama_kv_cache: size =\s*([\d.]+) MiB \(\s*(\d+) cells`)
+	reRecurrent = regexp.MustCompile(`llama_memory_recurrent: size =\s*([\d.]+) MiB \(\s*(\d+) cells,\s*\d+ layers,\s*\d+ seqs\s+(\d+) rs_seq`)
+	reCacheMiB  = regexp.MustCompile(`prompt cache is enabled, size limit: (\d+) MiB`)
+	reCkptMiB   = regexp.MustCompile(`context checkpoint .*size = ([\d.]+) MiB`)
 )
+
+// MemGeometry is what one llama-server context costs per token and per
+// sequence, from its startup log. Each field is 0 when its line was not seen.
+//
+// A host prompt-cache entry (server prompt_save) is llama_state_seq of the
+// target context plus the draft context, plus the slot's context checkpoints:
+// tokens × KVCellBytes + RSSeqBytes + checkpoints × CheckpointBytes. On Swift
+// that predicts a 28674-token save within 1.3 MiB of the logged 1215 MiB.
+type MemGeometry struct {
+	NCtxSlot        int     // per-slot context cap (n_ctx_slot)
+	KVCellBytes     float64 // KV bytes per cell, summed over the target and draft contexts
+	RSSeqBytes      float64 // recurrent state of one sequence (hybrid models); 0 otherwise
+	CheckpointBytes float64 // one context checkpoint, first seen in the log
+	CacheRAMBytes   int64   // the prompt-cache size limit the server logged
+}
 
 // logBuffer is a backend's bounded, line-oriented capture of its stdout/stderr.
 // It is an io.Writer (wired into the spawned cmd) that keeps the last `max`
@@ -42,6 +69,7 @@ type logBuffer struct {
 	nCtx    int
 	nSlots  int
 	kvMiB   int
+	geo     MemGeometry
 }
 
 func newLogBuffer(max int) *logBuffer { return &logBuffer{max: max} }
@@ -76,6 +104,7 @@ func (b *logBuffer) appendLine(line string) {
 			}
 		}
 	}
+	b.parseGeometry(line)
 	if b.nSlots == 0 {
 		if m := reNSlots.FindStringSubmatch(line); m != nil {
 			if v, err := strconv.Atoi(m[1]); err == nil {
@@ -97,6 +126,57 @@ func (b *logBuffer) appendLine(line string) {
 			}
 		}
 	}
+}
+
+// parseGeometry reads MemGeometry's lines (caller holds b.mu). Context lines
+// add up only before the n_slots banner: every context the server keeps is
+// built by then.
+func (b *logBuffer) parseGeometry(line string) {
+	g := &b.geo
+	if b.nSlots == 0 {
+		if m := reKVCells.FindStringSubmatch(line); m != nil {
+			mib, _ := strconv.ParseFloat(m[1], 64)
+			if cells, _ := strconv.Atoi(m[2]); cells > 0 {
+				g.KVCellBytes += mib * (1 << 20) / float64(cells)
+			}
+			return
+		}
+		// Rows are cells × (1 + rs_seq): each sequence keeps rs_seq rollback
+		// snapshots beside its live state, and only the live state is saved.
+		if m := reRecurrent.FindStringSubmatch(line); m != nil {
+			mib, _ := strconv.ParseFloat(m[1], 64)
+			cells, _ := strconv.Atoi(m[2])
+			rs, _ := strconv.Atoi(m[3])
+			if cells > 0 {
+				g.RSSeqBytes += mib * (1 << 20) / float64(cells*(1+rs))
+			}
+			return
+		}
+	}
+	if g.NCtxSlot == 0 {
+		if m := reNCtxSlot.FindStringSubmatch(line); m != nil {
+			g.NCtxSlot, _ = strconv.Atoi(m[1])
+		}
+	}
+	if g.CacheRAMBytes == 0 {
+		if m := reCacheMiB.FindStringSubmatch(line); m != nil {
+			mib, _ := strconv.ParseInt(m[1], 10, 64)
+			g.CacheRAMBytes = mib << 20
+		}
+	}
+	if g.CheckpointBytes == 0 {
+		if m := reCkptMiB.FindStringSubmatch(line); m != nil {
+			mib, _ := strconv.ParseFloat(m[1], 64)
+			g.CheckpointBytes = mib * (1 << 20)
+		}
+	}
+}
+
+// Geometry returns the memory geometry parsed so far.
+func (b *logBuffer) Geometry() MemGeometry {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.geo
 }
 
 // Lines returns a copy of the buffered lines, oldest first.

@@ -19,8 +19,10 @@ func TestPollerReadsCountersOrFallsBack(t *testing.T) {
 	}))
 	defer with.Close()
 	var asked404 atomic.Int64
-	without := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		asked404.Add(1)
+	without := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/metrics" {
+			asked404.Add(1)
+		}
 		http.NotFound(w, nil)
 	}))
 	defer without.Close()
@@ -30,7 +32,7 @@ func TestPollerReadsCountersOrFallsBack(t *testing.T) {
 	defer plain.Close()
 
 	p := NewPoller(func() []Target {
-		return []Target{{"swift", "a", with.URL}, {"swift", "b", without.URL}, {"other", "c", plain.URL}}
+		return []Target{{Served: "swift", Instance: "a", BaseURL: with.URL}, {Served: "swift", Instance: "b", BaseURL: without.URL}, {Served: "other", Instance: "c", BaseURL: plain.URL}}
 	}, 0)
 	ctx := context.Background()
 	p.PollOnce(ctx)

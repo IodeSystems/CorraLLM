@@ -157,6 +157,8 @@ type RunningInstance struct {
 	Model    string
 	Instance string
 	BaseURL  string
+	Cmd      string      // the command actually run
+	Geometry MemGeometry // parsed from its startup log; zero fields when not seen
 }
 
 // RunningInstances lists the ready backends this manager runs a process
@@ -171,12 +173,16 @@ func (m *Manager) RunningInstances() []RunningInstance {
 	var out []RunningInstance
 	for _, p := range procs {
 		p.mu.Lock()
-		h, st, tg := p.handle, p.state, p.Target
+		h, st, tg, cmd, logs := p.handle, p.state, p.Target, p.spawnedCmd, p.logs
 		p.mu.Unlock()
 		if h == nil || st != StateReady || tg == nil || tg.URL == nil {
 			continue
 		}
-		out = append(out, RunningInstance{Model: p.ModelName, Instance: h.ID(), BaseURL: tg.URL.String()})
+		ri := RunningInstance{Model: p.ModelName, Instance: h.ID(), BaseURL: tg.URL.String(), Cmd: cmd}
+		if logs != nil {
+			ri.Geometry = logs.Geometry()
+		}
+		out = append(out, ri)
 	}
 	return out
 }
