@@ -232,3 +232,15 @@ Qwen3.8-27B in one CUDA megakernel; two-GPU tensor parallel, up to 8 slots batch
 - Weight KLD: Swift Q6_K_S 0.0016, Q5_K_M 0.0061; UD 3.1 Q5_K_XL ~0.0035 (chart read, other reference).
 - If resumed: step 1 = Swift Q6_K_S q8_0 vs f16 KV KLD at ≥32k vs BF16 logits (gen ref on CPU first);
   step 2 only if KV cost ≥ ~0.005: UD-Q5_K_XL f16 KV + --kv-unified 128k pool. Data: scratchpad quantfit/.
+
+## IodeSystems llama.cpp patch-queue fork (owner 11-15: "Yes" — after the p8/p9 S2 canary settles)
+- Why: 9 local patches (p1-p9) touch sampling, KV cache and FA kernels; .patch-at-build-time already bit us (the 11-05
+  unapply reverse-apply bug, p9's manual rebase). Git gives rerere, bisect, per-patch history; CI can ship signed binaries.
+- Shape: repo iodesystems/llama.cpp, one branch per upstream release (e.g. iode/v1.0.0), one commit per patch, header =
+  upstream PR link + state, env gate, default (off), measured effect. Every patch env-gated and off by default → the
+  fork with no env set behaves like upstream. CI: build sm_120 + sm_86, test-backend-ops + server pytest, nightly rebase
+  onto upstream master (report conflicts before the 06:00 rebuild), minisign-signed releases (key 2CC27A171DE03D42).
+  corrallm's llama.cpp recipe builds from the fork ref instead of applying patches/; patch-set hash → git commit.
+- Risks: public fork invites support expectations (start private or label "corrallm build"); patches churn (p6/p7 canaries,
+  p9 unreviewed upstream, p1 retires when #30683 merges) — each commit needs a status.
+**Resume when.** S2 (p8 + p9) has a keep/revert verdict, and the owner says go.
