@@ -841,7 +841,13 @@ crashes); rs_max > 0: rollback reads another seq's snapshot = SILENT recurrent-s
 Live p1..p7 build has it too. Fix = new p10-recurrent-rollback-displace (rs_max moves with the cell; re-split batch one seq
 per ubatch on hazard; llama-memory-hybrid.cpp + recurrent init_batch). CPU Qwen3.5-0.8B hybrid+MTP: directed repro fixed,
 40-round fuzz 3 aborts + 9 corrupt → 0 + 0; 10-min 3-slot p8 load 0 aborts. Fork corrallm-main 27dfa8ba1 + branch
-iode/p10-…; no PR yet. Build 20261116-051801-b1b770d9 (p1..p10) ACTIVE in bin/ since ~21:19. **Candidate upstream issue.** p9 not bit-identical (expected: fused dequant rounding) → quality
+iode/p10-…; no PR yet. Build 20261116-051801-b1b770d9 (p1..p10) ACTIVE in bin/ since ~21:19. **Candidate upstream issue.**
+KLD WINDOW 11-15 21:58:14-22:14:46 (16.5 min off, 124×429, 1×503, 0 cut; bounded drain): p9 fused vs unfused on Swift Q6_K_S
+(build 051801, q8_0/q8_0): 32k median 0 / p99 3.7e-5 / max 7.4e-5 / top-1 99.995 %; 8k p99 3.7e-5 / top-1 99.988 %; PPL equal
+to 4 dp → ✅ p9 numerically sound. Unsloth UD NVFP4 (compressed-tensors → GGUF --fp8-as-q8, 23.2 GB) vs base Q8_0, k8v8:
+8k median 0.0178 / top-1 74.0 %, 32k 0.0149 / 73.6 % → fails the bar (~12× Q6_K median). Refs swift-q6-unfused-{8k,32k}.kld
+(~80 GB). S2b relaunched by that window: Swift on 051801 (p1..p10) + FUSED=1 + PAR_SAMPLING=1 since 22:14:46; collector
+s2b_series.csv. QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4 now on HF = P76 resume condition met. p9 not bit-identical (expected: fused dequant rounding) → quality
 verdict = KLD at 32k/64k in a quiet window.
 BUG (corrallm): storing a changed Swift cmd before a daemon handoff → new daemon restarted Swift UNDRAINED (17:51:42).
 corrallm 0bb20ab: GGML_CUDA_FA_ALL_QUANTS env-overridable (default ON), deployed v0.3.0-99. Build timeout 2 h hard-coded
