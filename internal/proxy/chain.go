@@ -395,6 +395,13 @@ func candidateChain() ([]BodyStage, writerOrders) {
 			backend, loadCost := c.backend, c.loadCost
 			c.cw = &costWriter{ResponseWriter: out, price: func(u usage) (float64, string) {
 				return c.p.replyCost(backend, u, loadCost)
+			}, reasoning: func(u usage) (int, bool) {
+				// The count the activity row stores (statusCapture is inside
+				// this writer, so it has seen the reply up to the usage).
+				if c.sc == nil {
+					return 0, false
+				}
+				return c.sc.thinkingTokens(u)
 			}}
 			return c.cw
 		}}

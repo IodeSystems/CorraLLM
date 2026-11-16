@@ -107,6 +107,11 @@ const costWindow = 64 << 10
 type costWriter struct {
 	http.ResponseWriter
 	price func(usage) (float64, string)
+	// reasoning is the thinking-token count the activity row records; added as
+	// usage.completion_tokens_details.reasoning_tokens (OpenAI's field) when
+	// the upstream did not send one. nil or !ok adds nothing: an unmeasured
+	// count must not read as 0.
+	reasoning func(usage) (int, bool)
 
 	decided bool
 	sse     bool // line mode, else window mode
@@ -264,7 +269,8 @@ func objectAfter(b []byte, key string) (int, int, bool) {
 
 // withCost inserts "cost" and "cost_source" before the usage object's closing
 // brace. An upstream's own "cost" is kept (it is what the figure is); only the
-// source is added.
+// source is added. The reasoning count goes into completion_tokens_details,
+// created when absent; an upstream's own reasoning_tokens is kept.
 func (c *costWriter) withCost(b []byte, u usage) []byte {
 	s, e, ok := objectAfter(b, "usage")
 	if !ok {
@@ -283,16 +289,44 @@ func (c *costWriter) withCost(b []byte, u usage) []byte {
 	if _, ok := have["cost_source"]; !ok {
 		add = append(add, `"cost_source":"`+source+`"`)
 	}
-	if len(add) == 0 {
+	// nestAt/nest: an insertion into an existing completion_tokens_details.
+	nestAt, nest := -1, ""
+	if c.reasoning != nil {
+		if n, ok := c.reasoning(u); ok {
+			field := `"reasoning_tokens":` + strconv.Itoa(n)
+			raw, has := have["completion_tokens_details"]
+			var det map[string]json.RawMessage
+			switch {
+			case !has:
+				add = append(add, `"completion_tokens_details":{`+field+`}`)
+			case json.Unmarshal(raw, &det) == nil && det != nil:
+				if _, ok := det["reasoning_tokens"]; !ok {
+					if _, de, ok := objectAfter(b[s:e], "completion_tokens_details"); ok {
+						nestAt, nest = s+de-1, field
+						if len(det) > 0 {
+							nest = "," + field
+						}
+					}
+				}
+			}
+		}
+	}
+	if len(add) == 0 && nestAt < 0 {
 		return b
 	}
 	ins := strings.Join(add, ",")
-	if len(have) > 0 {
+	if len(have) > 0 && ins != "" {
 		ins = "," + ins
 	}
 	closeAt := e - 1 // the object's closing brace
-	out := make([]byte, 0, len(b)+len(ins))
-	out = append(out, b[:closeAt]...)
+	out := make([]byte, 0, len(b)+len(ins)+len(nest))
+	if nestAt >= 0 {
+		out = append(out, b[:nestAt]...)
+		out = append(out, nest...)
+		out = append(out, b[nestAt:closeAt]...)
+	} else {
+		out = append(out, b[:closeAt]...)
+	}
 	out = append(out, ins...)
 	return append(out, b[closeAt:]...)
 }

@@ -39,6 +39,12 @@ It runs in production today, fronting a mixed embeddings and chat workload.
   - `cache_slots_typical`: the same count at the last hour's mean entry size
     (patched `/metrics`, at least 3 cached entries); absent before that. It
     moves with how long conversations run.
+  Chat replies (`/v1/chat/completions`, non-streamed and the streamed usage
+  chunk) carry `usage.completion_tokens_details.reasoning_tokens`, OpenAI's
+  field, with the count the activity row stores, when corrallm measured it
+  (llama-server replies) or the upstream sent it. Absent means not measured,
+  not 0. `/v1/messages` has no such field (Anthropic counts thinking inside
+  `output_tokens`).
 
   Clients should size their pools from `cache_slots`: keep at most that many
   live conversations and none is prefilled cold again. Both counts change when
