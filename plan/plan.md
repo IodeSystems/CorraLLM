@@ -827,6 +827,12 @@ auto-detected slots (/props total_slots; config maxConcurrent wins + WARN on mis
 slots + floor(budget / worst entry); worst entry = RS 149.6 MiB/seq + n_ctx_slot × 38 KiB (target 34 + MTP draft 4) +
 n_ckpt × ckpt ≈ 4,539 MiB → Swift 9) + cache_slots_typical (≈15) + churn (f9f8d19, 4c10564). S2 (p1..p9, FUSED=1 +
 PAR_SAMPLING=1) restarted Swift 15 s later (17:51:42) → aw4 pool 4 → 6 lands inside S2; compare at equal busy slots.
+P3c 6 h READOUT (12:25-18:25 vs 11-13 same hours, 2 slots): window confounded (aw4 pool 2 from 13:44, 0 at 16:25-16:38;
+Swift restarts 13:32-13:51 + 17:51) → 1,827 vs 3,076 req; total 84.6 vs 114.4 tok/s = demand, not capacity. decode p50 60.1 vs
+81.3; queue p50 0 vs 5.8 s, p90 16.9 vs 25.4 s; TTFT p50 3.9 vs 7.7 s; 19× 503 (restarts) vs 4× 502; kv holds 10 (p50 wait
+13.9 s), kv-full 0, context-exceeded 0, CUDA/OOM 0; cache hit 83.2 vs 90.9 % (3 cold restarts), turn-1 20.8 vs 25.4 %;
+VRAM 31,822 of 32,088. Clean comparison = saturated hour 12:25-13:25 (114.8 tok/s total, queue p50 3.8 s, TTFT 6.4 s).
+Recommendation: KEEP 3 slots (same saturated throughput, ~1/3 TTFT, no errors; aw4 pool sized 6 = 2 × slots). Owner decides.
 GAP: `corrallm tools build` from the CLI activates WITHOUT the benchmark gate (p6 and p7 both ungated); the gated path
 needs the daemon API + admin token (disabled). Owner decides: CLI `--gate` flag or accept.
 Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
