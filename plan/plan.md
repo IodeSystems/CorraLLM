@@ -822,6 +822,11 @@ lanes 1), 0 during 16:25-16:38 (handover stall; aw4 daemon restart 16:38:38); po
 → P3c light window 13:55-15:50 = aw4-side, not corrallm. /v1/models fixes committed 879c35e (slots = admitted capacity) +
 67046df (aliases list + GET /v1/models/{id} resolving aliases); NOT deployed — deploy after the p8/p9 canary stages (aw4 pool
 then goes 4 → 6). Stale "2" source in TunedSlots not identified (live Swift banner says n_slots 3); verify after deploy.
+DEPLOYED v0.3.0-95-g4c10564 at 17:51:27 PST (handoff): /v1/models slots = admitted (Swift 3), aliases, GET /v1/models/{id},
+auto-detected slots (/props total_slots; config maxConcurrent wins + WARN on mismatch) and cache_slots (guaranteed floor =
+slots + floor(budget / worst entry); worst entry = RS 149.6 MiB/seq + n_ctx_slot × 38 KiB (target 34 + MTP draft 4) +
+n_ckpt × ckpt ≈ 4,539 MiB → Swift 9) + cache_slots_typical (≈15) + churn (f9f8d19, 4c10564). S2 (p1..p9, FUSED=1 +
+PAR_SAMPLING=1) restarted Swift 15 s later (17:51:42) → aw4 pool 4 → 6 lands inside S2; compare at equal busy slots.
 GAP: `corrallm tools build` from the CLI activates WITHOUT the benchmark gate (p6 and p7 both ungated); the gated path
 needs the daemon API + admin token (disabled). Owner decides: CLI `--gate` flag or accept.
 Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
