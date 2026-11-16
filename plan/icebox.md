@@ -251,3 +251,8 @@ DRAFT PRs #1-#9 inside the fork (pN base = p(N-1), #1 base main) with draft upst
 messages of p1/p6/p9 contain full ggml-org URLs (possible backlink later). Authorship verified (p1 Sarah Wu #30683, p9 Javier
 Argomedo #31802). Local clone ~/local/src/iodesystems/llama.cpp (remote iode = only push remote). Not yet: corrallm recipe
 building from the fork; env gates for always-on p1/p2/p3/p4-metrics/p5/p9(default FUSED=1).
+REORDERED 11-16 (owner "reorder, yes"): corrallm-main 50409e1a4 = p10 · p1 · p9a (untrimmed #31802 rebase) · p9b (trim) · p2 · p3 ·
+p4 · p5 · p6 · p7 · p8a (thread-safe getters) · p8b (parallel sampling) · README. Code tree identical to 27dfa8ba1. p4 before p5
+and p6 before p7 because p5 builds on p4 (victim(), evict reasons, metrics struct) and p7 on p6 (checkpoint claims, peek()).
+Draft PRs #10-#21 (stacked); #1-#9 closed as superseded. Backups: tag pre-reorder-2026-11-16, archive/2026-11-16/*.
+Production patches/ unchanged (still p1..p10 by file name).
