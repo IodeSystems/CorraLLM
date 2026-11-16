@@ -827,6 +827,18 @@ auto-detected slots (/props total_slots; config maxConcurrent wins + WARN on mis
 slots + floor(budget / worst entry); worst entry = RS 149.6 MiB/seq + n_ctx_slot × 38 KiB (target 34 + MTP draft 4) +
 n_ckpt × ckpt ≈ 4,539 MiB → Swift 9) + cache_slots_typical (≈15) + churn (f9f8d19, 4c10564). S2 (p1..p9, FUSED=1 +
 PAR_SAMPLING=1) restarted Swift 15 s later (17:51:42) → aw4 pool 4 → 6 lands inside S2; compare at equal busy slots.
+S2 11-15 (build 20261116-032611 = p1..p7 + p8 + p9 TRIMMED to q8_0/hd256; fattn.cu 34 s vs >1.5 h untrimmed; recipe 436 s;
+3080 test-backend-ops FLASH_ATTN_EXT 4538/4538): clean 19:53-20:13 vs old build 18:25-19:27 → decode p50 per request 56.5 →
+68.6 tok/s (+21 %), at 3 busy 56.5 → 66.9; total at 3 busy 116.9 → 110.8 (load differed: 75 vs 91 % at 3 busy, 10.5 vs 7.7 arr/min;
+baseline had CPU compiles) → total-throughput effect unresolved; MTP acc 0.641 → 0.643; VRAM −660 MiB (31,150); probes:
+only near-tie divergences (margin 0.03, old build flips it too), max |Δlogprob| 0.089. p8 saves ~4.4 ms/step.
+❌ p8 CRASH ×2 (19:40:53 with PAR unset, 20:13:40 set): seq_rm "failed to remove sequence … p1=-1" from p8's post_decode
+restructure on the partial-acceptance spec-checkpoint restore path → rolled back 20:19:01 to 20261115-185132 + cfg-full.pre.
+Owner 11-15: fix p8 now, then relaunch S2 (agent running). p9 not bit-identical (expected: fused dequant rounding) → quality
+verdict = KLD at 32k/64k in a quiet window.
+BUG (corrallm): storing a changed Swift cmd before a daemon handoff → new daemon restarted Swift UNDRAINED (17:51:42).
+corrallm 0bb20ab: GGML_CUDA_FA_ALL_QUANTS env-overridable (default ON), deployed v0.3.0-99. Build timeout 2 h hard-coded
+(internal/toolchain/run.go:59).
 P3c 6 h READOUT (12:25-18:25 vs 11-13 same hours, 2 slots): window confounded (aw4 pool 2 from 13:44, 0 at 16:25-16:38;
 Swift restarts 13:32-13:51 + 17:51) → 1,827 vs 3,076 req; total 84.6 vs 114.4 tok/s = demand, not capacity. decode p50 60.1 vs
 81.3; queue p50 0 vs 5.8 s, p90 16.9 vs 25.4 s; TTFT p50 3.9 vs 7.7 s; 19× 503 (restarts) vs 4× 502; kv holds 10 (p50 wait
