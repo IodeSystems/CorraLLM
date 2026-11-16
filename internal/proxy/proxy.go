@@ -3061,7 +3061,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 		Members       []string `json:"members,omitempty"`        // lane member model names, in fallback order
 		Persistent    bool     `json:"persistent,omitempty"`     // pinned + preloaded
 		ContextLength int      `json:"context_length,omitempty"` // one request's window: n_ctx (if resident), capped by contextPerRequest
-		Slots         int      `json:"slots,omitempty"`          // admission concurrency (maxConcurrent / --parallel)
+		Slots         int      `json:"slots,omitempty"`          // admission concurrency the scheduler grants: config maxConcurrent, not a spawn-time tuned value
 		// Modalities: accepted input modalities keyed by name (text|image|audio),
 		// each with optional metadata (image maxResolution/formats, text maxTokens).
 		Modalities map[string]config.ModalitySpec `json:"modalities"`
@@ -3111,7 +3111,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
 			State: "absent", Quality: mc.Quality, Type: mc.Type, Kind: "model",
 			Persistent:     mc.Persistent,
-			Slots:          p.mgr.TunedSlots(name, mc.Slots()),
+			Slots:          mc.Slots(), // what sched.Admit grants (see admit); a resident process's tuned/banner count may differ
 			Modalities:     mc.EffectiveModalities(name, p.cost.IsAudioType(mc.Type)),
 			Outputs:        config.ModelIO(name, mc, p.cost.IsAudioType(mc.Type)).Out,
 			OutputFormats:  config.TypeOutputFormats(mc.Type),
@@ -3189,7 +3189,7 @@ func (p *Proxy) handleModels(w http.ResponseWriter, req *http.Request) {
 		}
 		laneSlots := 0
 		if len(cands) > 0 {
-			laneSlots = p.mgr.TunedSlots(cands[0].Name, cands[0].Model.Slots()) // primary member's (tuned) capacity
+			laneSlots = cands[0].Model.Slots() // primary member's admitted capacity
 		}
 		out.Data = append(out.Data, model{
 			ID: name, Object: "model", Created: p.started, OwnedBy: "corrallm",
