@@ -244,3 +244,10 @@ Qwen3.8-27B in one CUDA megakernel; two-GPU tensor parallel, up to 8 slots batch
 - Risks: public fork invites support expectations (start private or label "corrallm build"); patches churn (p6/p7 canaries,
   p9 unreviewed upstream, p1 retires when #30683 merges) — each commit needs a status.
 **Resume when.** S2 (p8 + p9) has a keep/revert verdict, and the owner says go.
+STARTED 11-15 (owner "Create the GitHub repo"): https://github.com/IodeSystems/llama.cpp (public fork, Actions disabled).
+main = v1.0.0 b1b770d90; corrallm-main = f993eb9ac (p1..p9 + README-IODE.md); stacked review branches iode/p1-… … iode/p9-…;
+DRAFT PRs #1-#9 inside the fork (pN base = p(N-1), #1 base main) with draft upstream-style bodies for owner editing
+(sources scratchpad prs/p*.md). Nothing opened upstream; upstream refs in PR bodies are code spans (no backlinks); commit
+messages of p1/p6/p9 contain full ggml-org URLs (possible backlink later). Authorship verified (p1 Sarah Wu #30683, p9 Javier
+Argomedo #31802). Local clone ~/local/src/iodesystems/llama.cpp (remote iode = only push remote). Not yet: corrallm recipe
+building from the fork; env gates for always-on p1/p2/p3/p4-metrics/p5/p9(default FUSED=1).
