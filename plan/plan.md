@@ -817,6 +817,11 @@ _THREADS (4); metrics llamacpp:par_sampling_*. Needs 3 guards in llama_context::
 (TSan negative control proves them needed). CPU: same failure sets on/off; seeded outputs bit-identical on/off (tinygemma3);
 sampling wall −30..40 % (not 3×, cause unknown) → expect ~2-3 ms/step on Swift (~4 %), not the 4-5 ms estimated.
 Untested: CUDA, 27B, MTP.
+aw4 LOAD WINDOWS (aw4-50, 11-15): aw4 Swift pool effectively 2 sessions 13:44-16:41 (alias local-Qwen3.8-27B unresolved →
+lanes 1), 0 during 16:25-16:38 (handover stall; aw4 daemon restart 16:38:38); pool 4 live 16:43:10 (reads /v1/models slots 2).
+→ P3c light window 13:55-15:50 = aw4-side, not corrallm. /v1/models fixes committed 879c35e (slots = admitted capacity) +
+67046df (aliases list + GET /v1/models/{id} resolving aliases); NOT deployed — deploy after the p8/p9 canary stages (aw4 pool
+then goes 4 → 6). Stale "2" source in TunedSlots not identified (live Swift banner says n_slots 3); verify after deploy.
 GAP: `corrallm tools build` from the CLI activates WITHOUT the benchmark gate (p6 and p7 both ungated); the gated path
 needs the daemon API + admin token (disabled). Owner decides: CLI `--gate` flag or accept.
 Live Swift `--cache-ram 27648` (27 GiB) is intentional: owner 11-15 — the knee of the hit-rate curve. p7 adds ~150 MiB per
