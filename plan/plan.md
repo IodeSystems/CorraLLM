@@ -847,7 +847,13 @@ KLD WINDOW 11-15 21:58:14-22:14:46 (16.5 min off, 124×429, 1×503, 0 cut; bound
 to 4 dp → ✅ p9 numerically sound. Unsloth UD NVFP4 (compressed-tensors → GGUF --fp8-as-q8, 23.2 GB) vs base Q8_0, k8v8:
 8k median 0.0178 / top-1 74.0 %, 32k 0.0149 / 73.6 % → fails the bar (~12× Q6_K median). Refs swift-q6-unfused-{8k,32k}.kld
 (~80 GB). S2b relaunched by that window: Swift on 051801 (p1..p10) + FUSED=1 + PAR_SAMPLING=1 since 22:14:46; collector
-s2b_series.csv. QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4 now on HF = P76 resume condition met. p9 not bit-identical (expected: fused dequant rounding) → quality
+s2b_series.csv. QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4 now on HF = P76 resume condition met.
+✅ S2b 6.4 h READOUT (11-15 22:15 → 11-16 04:41, 3,489 req, Swift pid unchanged = 0 crashes/aborts) vs old build 18:25-19:27:
+decode p50 56.5 → 68.4 tok/s (+21 %), p90 74.2 → 91.7; total 109.8 → 130.0 tok/s (+18 %); at 3 busy 116.9 → 131.0 (+12 %);
+3 busy 97 % of the time; queue p50 5.7 → 10.9 s, TTFT 9.5 → 14.3 s (aw4 pool 6 vs 4: more demand); cache hit 84.5 → 86.8 %,
+turn-1 22.5 → 31.8 % (210); 5xx 4 → 3; kv holds 134; VRAM max 31,162; MTP acc 0.59-0.76 per 5 min; probes 13 runs, only the
+known near-tie (margin 0.03), max |Δlogprob| ≤ 0.06. First-30-min −8 % at 3 busy was cold-cache noise.
+Recommendation: KEEP S2b (p1..p10, FUSED=1, PAR_SAMPLING=1) as production. p9 not bit-identical (expected: fused dequant rounding) → quality
 verdict = KLD at 32k/64k in a quiet window.
 BUG (corrallm): storing a changed Swift cmd before a daemon handoff → new daemon restarted Swift UNDRAINED (17:51:42).
 corrallm 0bb20ab: GGML_CUDA_FA_ALL_QUANTS env-overridable (default ON), deployed v0.3.0-99. Build timeout 2 h hard-coded
