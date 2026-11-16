@@ -834,7 +834,14 @@ baseline had CPU compiles) → total-throughput effect unresolved; MTP acc 0.641
 only near-tie divergences (margin 0.03, old build flips it too), max |Δlogprob| 0.089. p8 saves ~4.4 ms/step.
 ❌ p8 CRASH ×2 (19:40:53 with PAR unset, 20:13:40 set): seq_rm "failed to remove sequence … p1=-1" from p8's post_decode
 restructure on the partial-acceptance spec-checkpoint restore path → rolled back 20:19:01 to 20261115-185132 + cfg-full.pre.
-Owner 11-15: fix p8 now, then relaunch S2 (agent running). p9 not bit-identical (expected: fused dequant rounding) → quality
+Owner 11-15: fix p8 now, then relaunch S2. ROOT CAUSE = UPSTREAM BUG, not p8: llama_memory_recurrent::find_slot
+(src/llama-memory-recurrent.cpp ~640-660) moves another seq's cell but leaves rs_max behind → if that seq finished in an
+earlier ubatch of the same batch, its rollback snapshots are overwritten → rs_max 0: seq_rm false → server abort (both
+crashes); rs_max > 0: rollback reads another seq's snapshot = SILENT recurrent-state corruption (logit err up to 5.4 CPU).
+Live p1..p7 build has it too. Fix = new p10-recurrent-rollback-displace (rs_max moves with the cell; re-split batch one seq
+per ubatch on hazard; llama-memory-hybrid.cpp + recurrent init_batch). CPU Qwen3.5-0.8B hybrid+MTP: directed repro fixed,
+40-round fuzz 3 aborts + 9 corrupt → 0 + 0; 10-min 3-slot p8 load 0 aborts. Fork corrallm-main 27dfa8ba1 + branch
+iode/p10-…; no PR yet. Build 20261116-051801-b1b770d9 (p1..p10) ACTIVE in bin/ since ~21:19. **Candidate upstream issue.** p9 not bit-identical (expected: fused dequant rounding) → quality
 verdict = KLD at 32k/64k in a quiet window.
 BUG (corrallm): storing a changed Swift cmd before a daemon handoff → new daemon restarted Swift UNDRAINED (17:51:42).
 corrallm 0bb20ab: GGML_CUDA_FA_ALL_QUANTS env-overridable (default ON), deployed v0.3.0-99. Build timeout 2 h hard-coded
