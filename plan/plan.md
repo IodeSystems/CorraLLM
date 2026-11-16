@@ -867,7 +867,14 @@ vocab (swift-aw4-32k.json, 32,768 ids, 99.9 % held-out coverage; PR mix48 list 9
 Live since 10:19:48 on build 20261116-171030. Fork PR #22 (iode/13-draft-vocab-trim). Note: output tok/s fell from ~158 (morning)
 to ~110 after the reasoning cap (shorter replies) → judge throughput by turns/hour from now on, not tok/s.
 BUG (corrallm llama.cpp recipe): `git clean -xdf` runs AFTER applying patches → files a patch ADDS are deleted (p11's test +
-script dropped from production patch; a patch adding a new source file would break the build). Fix = clean before apply. p9 not bit-identical (expected: fused dequant rounding) → quality
+script dropped from production patch; a patch adding a new source file would break the build). Fix = clean before apply.
+11-16 afternoon: PR #28549 (CUDA graphs for MTP) already in b1b770d9 (2f3fd0252 ancestor) → no p12. Equal-length drafts: 99.97 %
+of drafts are full length → no p13. n-gram + MTP (`--spec-type ngram-mod,draft-mtp`, n-match 24, n-min/n-max 4) LIVE since
+14:16 (kept, easy rollback: scratchpad n/cfg-N.pre.yaml): n-gram drafts 5 % of drafts, acceptance 0.812 (3.25 tok/draft) vs MTP
+0.646; A/B confounded by life-raglit load (turns/h at busy-3 417 → 525 total, aw4 tool-call 394 → 331) → expected gain ~1-2 %,
+unresolved. STRUCTURAL LIMIT: drafts > n_rs_seq (4) force a recurrent checkpoint/restore on this hybrid model, so long
+suffix-style drafts don't pay; raising n_rs_seq costs ~150 MiB per row per slot (no VRAM headroom).
+life-raglit: recurring 5xx = EOF after 2-10 ms (17 on 11-15, ongoing), unrelated to arm N — open. p9 not bit-identical (expected: fused dequant rounding) → quality
 verdict = KLD at 32k/64k in a quiet window.
 BUG (corrallm): storing a changed Swift cmd before a daemon handoff → new daemon restarted Swift UNDRAINED (17:51:42).
 corrallm 0bb20ab: GGML_CUDA_FA_ALL_QUANTS env-overridable (default ON), deployed v0.3.0-99. Build timeout 2 h hard-coded
