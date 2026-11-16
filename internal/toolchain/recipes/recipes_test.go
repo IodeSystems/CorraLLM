@@ -507,3 +507,55 @@ func TestNemoSpeechBuildAnswersTheThingsStableDiffusionDoesNotHaveTo(t *testing.
 		t.Error("build() resets the vendored ggml AFTER align_tree — by then align_tree has already refused to move a tree with tracked changes, warned once, and left the checkout frozen at the patched commit")
 	}
 }
+
+// GGML_CUDA_FA_ALL_QUANTS is ON unless the environment says OFF, and a value
+// that is neither is refused rather than read as one of them.
+//
+// The full FA quant matrix is most of a box1 build's CUDA compile time; OFF
+// trims it to cmake's default list. Checked against the script's own function
+// because the failure is silent: a build that read a typo as OFF would ship a
+// binary missing the kernels a mixed K/V cache config needs, and one that
+// ignored the variable would never get faster.
+func TestLlamaCppFaAllQuantsComesFromTheEnvironment(t *testing.T) {
+	b, err := Script("llama.cpp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	if !strings.Contains(src, `-DGGML_CUDA_FA_ALL_QUANTS="$faq"`) {
+		t.Fatal("the cmake arguments do not pass fa_all_quants' value — the environment cannot change the build")
+	}
+	if !strings.Contains(src, `stamp_now="$stamp_now fa_all_quants=OFF"`) {
+		t.Error("an OFF build is not stamped as one — switching back to ON would skip the build and keep the trimmed binary")
+	}
+	start := strings.Index(src, "fa_all_quants() {")
+	end := strings.Index(src[start:], "\n}\n")
+	if start < 0 || end < 0 {
+		t.Fatal("no fa_all_quants function in the llama.cpp recipe")
+	}
+	fn := src[start : start+end+3]
+	for _, tc := range []struct {
+		env, want string
+		ok        bool
+	}{
+		{"", "ON", true},
+		{"ON", "ON", true},
+		{"on", "ON", true},
+		{"1", "ON", true},
+		{"OFF", "OFF", true},
+		{"off", "OFF", true},
+		{"0", "OFF", true},
+		{"no", "", false},
+		{"OFFF", "", false},
+	} {
+		cmd := exec.Command("bash", "-c", fn+"\nfa_all_quants")
+		cmd.Env = append(os.Environ(), "GGML_CUDA_FA_ALL_QUANTS="+tc.env)
+		out, err := cmd.Output()
+		if (err == nil) != tc.ok {
+			t.Errorf("GGML_CUDA_FA_ALL_QUANTS=%q: err = %v, want ok=%v", tc.env, err, tc.ok)
+		}
+		if string(out) != tc.want {
+			t.Errorf("GGML_CUDA_FA_ALL_QUANTS=%q: got %q, want %q", tc.env, out, tc.want)
+		}
+	}
+}

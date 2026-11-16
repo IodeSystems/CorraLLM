@@ -140,6 +140,21 @@ install_deps() {
     fi
 }
 
+# fa_all_quants is the -DGGML_CUDA_FA_ALL_QUANTS value a build passes: ON
+# unless GGML_CUDA_FA_ALL_QUANTS=OFF is in the environment. OFF compiles cmake's
+# default flash-attention list (f16, bf16, q4_0-q4_0, q8_0-q8_0, f8_e4m3 pairs),
+# which covers every box1 config (all q8_0/q8_0, 2026-11-15) at a fraction of the
+# compile time; a config with a mixed K/V cache pair needs ON. Anything but
+# ON/OFF is refused: a typo that silently built OFF would ship a binary missing
+# the kernels its config asks for.
+fa_all_quants() {
+    case "${GGML_CUDA_FA_ALL_QUANTS:-ON}" in
+        ON|on|1)   printf 'ON' ;;
+        OFF|off|0) printf 'OFF' ;;
+        *)         return 1 ;;
+    esac
+}
+
 # ---------------------------------------------------------------------------
 # build
 #
@@ -174,6 +189,10 @@ build() {
     # apply` does not move HEAD, and adding a GPU changes neither HEAD nor the
     # patches, so a HEAD-only stamp skips builds that are genuinely needed.
     stamp_now="head=$head patches=$(patch_set_hash) archs=$archs"
+    # OFF changes which kernels exist, so it is in the stamp; ON (the default) is
+    # left out so the stamps of existing builds still match.
+    local faq; faq=$(fa_all_quants) || die "GGML_CUDA_FA_ALL_QUANTS=${GGML_CUDA_FA_ALL_QUANTS} — must be ON or OFF"
+    [ "$faq" = "OFF" ] && stamp_now="$stamp_now fa_all_quants=OFF"
 
     if [ "${TOOL_FORCE:-0}" != "1" ] && [ -x "$bindir/$BIN_NAME" ] && [ "$(stamp_read "$bindir")" = "$stamp_now" ]; then
         say "up-to-date at $stamp_now; skipping build"
@@ -223,8 +242,9 @@ build() {
             # The full matrix of KV-cache quantisation combinations for flash
             # attention. Not architecture-specific, but the configs here run
             # `-fa on` with quantised K/V, so a card built without it would be
-            # missing exactly the kernels it needs.
-            -DGGML_CUDA_FA_ALL_QUANTS=ON
+            # missing exactly the kernels it needs. GGML_CUDA_FA_ALL_QUANTS=OFF in
+            # the environment trims it to cmake's default list (fa_all_quants).
+            -DGGML_CUDA_FA_ALL_QUANTS="$faq"
         )
         local cuda_home; cuda_home=$(cuda_toolkit_home)
         if [ -n "$cuda_home" ]; then
