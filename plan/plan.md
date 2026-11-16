@@ -853,7 +853,13 @@ decode p50 56.5 → 68.4 tok/s (+21 %), p90 74.2 → 91.7; total 109.8 → 130.0
 3 busy 97 % of the time; queue p50 5.7 → 10.9 s, TTFT 9.5 → 14.3 s (aw4 pool 6 vs 4: more demand); cache hit 84.5 → 86.8 %,
 turn-1 22.5 → 31.8 % (210); 5xx 4 → 3; kv holds 134; VRAM max 31,162; MTP acc 0.59-0.76 per 5 min; probes 13 runs, only the
 known near-tie (margin 0.03), max |Δlogprob| ≤ 0.06. First-30-min −8 % at 3 busy was cold-cache noise.
-Recommendation: KEEP S2b (p1..p10, FUSED=1, PAR_SAMPLING=1) as production. p9 not bit-identical (expected: fused dequant rounding) → quality
+Recommendation: KEEP S2b (p1..p10, FUSED=1, PAR_SAMPLING=1) as production.
+11-16: aw4 reasoning cap 2500 live 08:42 (clean from ~08:57; readout cron 10:07). OCR models pinned to the 3080 (pool gpu1).
+MTP n-max 5 lost to 4 (reverted 08:44:21). p11 = port of PR #31031 (draft vocab trim, --spec-draft-vocab, off by default),
+build 20261116-171030; canary pending. corrallm v0.3.0-106 (e6fffe1, 389f3ee): usage.completion_tokens_details.
+reasoning_tokens on chat completions; answer-room guard (answerReserve 2048; only lowers corrallm's own injected budget, notes
+reasoning-budget-clamped / reasoning-budget-short; life-raglit leaves 800). No budget-forcing field exists in the wild.
+agentkit reasoning-cut repair plan (hidden notification + reasoning off on the repair round; prefill deferred) awaits owner OK. p9 not bit-identical (expected: fused dequant rounding) → quality
 verdict = KLD at 32k/64k in a quiet window.
 BUG (corrallm): storing a changed Swift cmd before a daemon handoff → new daemon restarted Swift UNDRAINED (17:51:42).
 corrallm 0bb20ab: GGML_CUDA_FA_ALL_QUANTS env-overridable (default ON), deployed v0.3.0-99. Build timeout 2 h hard-coded
