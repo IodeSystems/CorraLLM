@@ -418,6 +418,9 @@ Owner 11-14: build now; do not enable it on box1 until the "wait and see" check 
 - **optional extensions:** show keepWarm on the dashboard (ModelDef field + make dump-schema).
 - **risks:** respawn and evict thrash with a large model that takes turns on the same pool; respawn during a P80 drain.
 - **blocking decisions:** when to set `keepWarm: true` on nomic-embed-text (owner, after watching aw4's retrieval_unavailable rate).
+- ✅ 11-17 07:21 (owner "Keepwarm now"): Swift sticky idleUnload 10m → keepWarm: true (config revision after 279; backup scratchpad
+  cfg-kw.pre.yaml). Cause: aw4 traffic fell overnight → Swift idle-unloaded 04:45, 05:52, 07:11; each cold start ~4 min
+  (27B load + 40 GiB arena pin + page-cache drop). Swift respawned 07:21:37 (pid 716107).
 
 ### ✅ P81 — Anthropic workspace usage limit → 402 upstream_funds_exhausted — 2026-11-14
 
