@@ -393,6 +393,14 @@ must not push or open upstream PRs (risk: contributor ban); use `Assisted-by:` n
 features start with an issue; bug-fix PRs need a repro issue + a regression test that fails before / passes after; new
 contributors: max 1 open PR; comment on an existing PR instead of duplicating it. Private forks exempt (our fork PR bodies =
 internal notes only, not for posting).
+11-17 REBASE onto master ad9d9e8f (incl. #32407) → ROLLED BACK before canary: fork branch iode/master-2026-11-17 (all patches
+kept; conflicts resolved: p1 vs #32154 get_reuse, p3/p4/p5/p7 → server-slot-sched.{cpp,h}, p6 call site, p9a + #32407 both kept);
+CPU tests same as v1.0.0, 3080 FLASH_ATTN_EXT 4432/4432 (FUSED 0/1/2), p10 fuzz clean; build 20261117-180259-ad9d9e8f (1650 s).
+KLD window 10:04-10:22 vs old-build unfused 32k ref: new FUSED=0 mean KLD 0.514, top-1 89.97 %, PPL 265.1 vs 257.2 (8k 57.79 vs
+56.68); FUSED=1 identical → NOT p9. Same on CPU Swift 4k and on Qwen3.5-2B Q8_0 on the 3080 → regression is CUDA, appears with
+Swift on the 5090 (sm_120 and/or Q6_K). Suspects: #32407 (sm_120 rotation), #31617, #32065, #32392. Rolled back to
+20261116-171030 (patch hash 060dffcd7349), Swift pid 1318118 10:22. **next:** targeted test (master with #32407 reverted) +
+KLD vs base Q8_0 reference to show the new build is worse, not just different; then bisect. Candidate upstream bug report (owner).
 Division of work: Claude prepares branches rebased on master, regression tests, repro programs, benchmarks/data tables and a
 per-change review guide; the OWNER reads/understands the code, writes every post in his own words, and submits.
 Chain (one open PR at a time):
