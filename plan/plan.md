@@ -401,6 +401,12 @@ KLD window 10:04-10:22 vs old-build unfused 32k ref: new FUSED=0 mean KLD 0.514,
 Swift on the 5090 (sm_120 and/or Q6_K). Suspects: #32407 (sm_120 rotation), #31617, #32065, #32392. Rolled back to
 20261116-171030 (patch hash 060dffcd7349), Swift pid 1318118 10:22. **next:** targeted test (master with #32407 reverted) +
 KLD vs base Q8_0 reference to show the new build is worse, not just different; then bisect. Candidate upstream bug report (owner).
+✅ 11-17 ROOT CAUSE = upstream #32407 (054a1babf, K/V read-order rotation, fattn-mma-f16.cuh nstages>1): B = master+stack with
+#32407 reverted → vs old build KLD 0 / top-1 99.995 % / PPL 257.19 (= old); C = pristine upstream master → identical to A (PPL
+265.10, top-1 vs old 89.97 %) → upstream bug, not our rebase. vs base Q8 (Swift finetune vs base model, so not a quant-error number;
+P76's 0.0012 was base Q6_K vs base Q8 — not comparable): B 1.197 mean / 82.54 % top-1, A 1.229 / 82.39 %. Window 11:41-12:04
+(193×429). Evidence pack (data only, for the owner's issue): scratchpad rb/issue-32407-data.md. Public repro (bartowski Q8_0 +
+wikitext, C vs B) needs another ~10 min window. Scratch worktrees rb/t407/B,C kept. B commit 13f3e8752 (local).
 Division of work: Claude prepares branches rebased on master, regression tests, repro programs, benchmarks/data tables and a
 per-change review guide; the OWNER reads/understands the code, writes every post in his own words, and submits.
 Chain (one open PR at a time):
