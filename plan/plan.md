@@ -386,6 +386,30 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P83 — Upstream contribution chain (llama.cpp) — 2026-11-16
+llama.cpp rules (CONTRIBUTING.md + AGENTS.md, read 11-16): AI code allowed but DISCLOSED; the human must review every line
+(~1 h per 200-400 LOC) and explain it unaided; AI must NOT write issues, PR descriptions, commit messages or replies; agents
+must not push or open upstream PRs (risk: contributor ban); use `Assisted-by:` not `Co-authored-by:` on upstream commits;
+features start with an issue; bug-fix PRs need a repro issue + a regression test that fails before / passes after; new
+contributors: max 1 open PR; comment on an existing PR instead of duplicating it. Private forks exempt (our fork PR bodies =
+internal notes only, not for posting).
+Division of work: Claude prepares branches rebased on master, regression tests, repro programs, benchmarks/data tables and a
+per-change review guide; the OWNER reads/understands the code, writes every post in his own words, and submits.
+Chain (one open PR at a time):
+- C1 p10 recurrent-rollback bug: (a) check master for an existing fix/issue; (b) repro on a public hybrid model
+  (Qwen3.5-0.8B + MTP) as a regression test in tests/ (fails before, passes after) + fuzz evidence; also a non-Qwen hybrid +
+  pure recurrent; (c) owner files the issue; (d) owner opens the fix PR (~150 LOC). Highest value: silent corruption.
+- C2 data comments on existing PRs (no code): #31802 (p9: 5090 KLD ≈ 0 vs unfused, decode/VRAM, compile-time concern →
+  template-instance split), #31031 (p11: domain list coverage 99.9 % vs mix48 91.8 %, acceptance), #30683 (p1: production use).
+- C3 p8a thread-safe llama_context getters (small) → then p8b parallel per-slot sampling: issue first; backend matrix + TSan.
+- C4 p4 cache metrics (drop id_slot): issue first, small PR.
+- C5 p6 cross-slot share: issue/RFC with dense + MoE numbers first.
+- C6 p3+p5 host prompt-cache arena: RFC; redesign on the ggml backend host-buffer API, off by default.
+- Not proposed: p2 (policy), p7 (benefit unproven), p9b trim + p11 token list (our build/config).
+**next:** C1(a)+(b): Claude prepares the rebased fix, regression test and repro on master; owner reviews.
+**risks:** ban risk from any automated upstream action; review time is the owner's; master drift breaks rebases.
+**blocking decisions:** owner's GitHub identity for upstream (Nthalk?), disclosure wording, and whether to start C1 now.
+
 ### ◐ P82 — `sticky.keepWarm`: respawn an evicted model when it fits — 2026-11-14
 Owner 11-14: build now; do not enable it on box1 until the "wait and see" check after idle unload was removed (done.md 11-14).
 - Spec: a keepWarm model that is down, and was not taken down by an explicit unload, respawns once it fits in free capacity without evicting anything. Crash backoff applies. It is not persistent: it can still be evicted and restarted.
