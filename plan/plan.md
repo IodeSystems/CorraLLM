@@ -407,6 +407,13 @@ KLD vs base Q8_0 reference to show the new build is worse, not just different; t
 P76's 0.0012 was base Q6_K vs base Q8 — not comparable): B 1.197 mean / 82.54 % top-1, A 1.229 / 82.39 %. Window 11:41-12:04
 (193×429). Evidence pack (data only, for the owner's issue): scratchpad rb/issue-32407-data.md. Public repro (bartowski Q8_0 +
 wikitext, C vs B) needs another ~10 min window. Scratch worktrees rb/t407/B,C kept. B commit 13f3e8752 (local).
+11-17 PUBLIC REPRO window 14:36-15:09 (Swift off ~36 min, restore verified: same build/cmd/env/config, keepWarm, 200): bartowski
+Qwen3.8-27B Q8_0 + wikitext-2, 32k × 4 chunks, C (pristine ad9d9e8f5, verified no iode patches) vs D (ad9d9e8f5 + revert
+054a1babf only): f16 K/V mean KLD 0.0025 / p99 0.0043 / top-1 98.99 % / PPL 6.2208 vs 6.2175; q8_0 0.0026 / 0.0045 / 98.88 % /
+6.2213 vs 6.2168. ~200× smaller than Swift's 0.514; K/V type does not matter; KLD sits in chunk 3 (0.009 vs 0.0004 in the others).
+test-backend-ops FLASH_ATTN_EXT on the 5090: C and D 4432/4432, incl. extra hd256 GQA6 kv=32768 nb=512 f16/q8_0 cases (scratch only).
+→ base model on public text shows only a small difference; no failing op test. Llama-3.1-8B dense rows not run (time). Data: evidence pack.
+**next:** owner decides whether this is enough for an issue; open: why Swift/agent corpus amplifies it (chunk-3 burst = position-specific?).
 Division of work: Claude prepares branches rebased on master, regression tests, repro programs, benchmarks/data tables and a
 per-change review guide; the OWNER reads/understands the code, writes every post in his own words, and submits.
 Chain (one open PR at a time):
