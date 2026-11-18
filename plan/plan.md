@@ -386,6 +386,20 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P84 — 503 EOF on Swift = stale keep-alive race — 2026-11-18
+Cause (measured): llama-server closes the socket right after a STREAMED reply with no `Connection: close`
+(raw-socket test on :5806 11-18: non-stream reply keeps the conn, stream reply → EOF in 0 ms). net/http
+has already pooled the conn; a request sent within ms reuses it → EOF before any byte. 11-15..11-17: 204
+rows 503 `EOF` (502 before 215be68; 502 EOF seen since ≥10-19), ~all start within 5 ms of another Swift
+reply; life-raglit fires its next request on reply, so it has most. Not idle-timeout (gaps not near 5 s).
+Fix dcea015 (`internal/proxy/staleconn.go`): local backends resend once on a fresh conn when the conn was
+reused + error EOF/reset + body replayable (GetBody). Deployed v0.3.0-118-gdcea015 06:46 by handoff, Swift
+pid 1468903 kept. **next:** check 503 EOF count over the next life-raglit burst (bursts were 12:45-13:06,
+16:05-16:45, 21:08-21:42 on 11-17). **risks:** the retry is not logged, so "0 × 503" is the only signal;
+a crash between the two sends is answered 503 as before. **optional:** a log/note on retry; report the
+silent close to llama.cpp (owner posts, P83 rules). Env note: `/tmp/go.mod` (poly-lsp-mcp, not ours)
+fails `TestModuleRootAboveIsEmptyOutsideAModule`; deploy ran with `TMPDIR=~/.cache/corrallm-tmp`.
+
 ### ◐ P83 — Upstream contribution chain (llama.cpp) — 2026-11-16
 llama.cpp rules (CONTRIBUTING.md + AGENTS.md, read 11-16): AI code allowed but DISCLOSED; the human must review every line
 (~1 h per 200-400 LOC) and explain it unaided; AI must NOT write issues, PR descriptions, commit messages or replies; agents
