@@ -450,7 +450,14 @@ streaming (bit-identical vs non-stream on CPU), exact true-token lp sidecar (tru
 Clamp share: Swift ref on old corpus 14.3 % (chunk 1 29 %, not 30 % overall); 0.8B on new corpus 0.13 %, but 0.8B on old corpus also
 0.02 % → the old-corpus clamp is 27B-specific; Swift's share on the new corpus is first measured by R1. Window hx/bin/window5.sh GO:
 R1 old ref 32k → R2 C vs R1 (#32407) → R3 old -ub 256 vs R1 (noise floor) → R4/R5 64k 2 chunks if ≥7 min left; est. Swift off ~19 min
-(13 min without R4/R5). **blocking decision:** owner approves the window. Analysis: hx/bin/post5.sh (split assistant vs tool/user).
+(13 min without R4/R5). Analysis: hx/bin/post5.sh (split assistant vs tool/user).
+✅ 11-18 VERDICT: #32407 is HARMLESS for Swift's generated tokens; the 0.514 was noise on tool-output tokens. Window 08:56:13-~09:12
+(Swift off ~16 min; restore verified: same build/cmd/exe/config, keepWarm, 200; env diff = systemd ids only). Results hx/w5/ana.out:
+32k assistant tokens (n 13367): R2 #32407 KLD 0.00023 / top-1 99.80 % / max 0.04 / 0 spikes >0.1; R3 noise floor (old build -ub 256)
+0.00022 / 99.80 % / max 0.06 → identical. 64k assistant (n 47561): R5 0.00057 / 99.23 % / max 0.29 / 0 spikes >1. All large KLD is in
+tool_response tokens (true PPL 530-2076, clamp 15-22 %): R2 0.46 vs R3 noise floor 0.39 → any reduction-order change flips them. True
+PPL 32k: ref 102.76, R2 104.27, R3 104.20. → no upstream report; a master-based fork may keep #32407. Old mixed-corpus KLD gates
+were dominated by tool-output noise; future gates use hx corpus, assistant-token split. Ref .kld files in hx/kld (~65 GB) deletable.
 Division of work: Claude prepares branches rebased on master, regression tests, repro programs, benchmarks/data tables and a
 per-change review guide; the OWNER reads/understands the code, writes every post in his own words, and submits.
 Chain (one open PR at a time):
