@@ -1433,6 +1433,8 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		defer releaseSlot()
 		r.Body = io.NopCloser(bytes.NewReader(outBody))
 		r.ContentLength = int64(len(outBody))
+		// Replayable, so localTransport can resend it after a stale keep-alive.
+		r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(outBody)), nil }
 		p.markInflight(live, inflightStreaming, name)
 		// A cold load this request triggered bills its swap energy to it.
 		var loadCost float64
@@ -1460,6 +1462,9 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		// A remote API's own 429/503: corrallm pauses the backend, makes sure the
 		// caller gets a Retry-After, and tries the next candidate if one is left.
 		remote := isRemote(backend)
+		if !remote {
+			rp.Transport = localTransport // one retry for a stale keep-alive (staleconn.go)
+		}
 		upstreamRefusal := 0
 		fundsNote := "" // set when the refusal was a billing one
 		var coolTo time.Time
