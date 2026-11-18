@@ -421,6 +421,12 @@ runs <=3. No near-tie flips; but D (the reverted reference) is ALSO confidently 
 C ' Scho' 0.999) and D's confident-wrong positions concentrate in the same ubatches → a region-local fault present in both builds, which
 #32407 changes but may not cause. Stream-K overlap not computed (occupancy unknown). Data: evidence pack. **next:** owner decides; a
 3rd reference for chunk 3 ubatches 32-37 (CPU or -fa off) would show whether D is also wrong there.
+11-18 3080 3rd-reference test (Swift untouched; OCR not loaded, yield guard not triggered). SenseNova-Loop-9B = qwen35 backbone
+(hd256, GQA 4) + layer loop + mHC, arch not in master → used bartowski Qwen3.5-9B Q4_K_M (fits FA-off 32k ub512, 1.2 GiB spare).
+sm_86: C and D bit-identical (#32407 no effect here). FA-on vs FA-off: mean KLD 0.0013, KLD>1 1.7/10k spread over all chunks;
+confident-wrong positions are the same with FA off, FA on and CPU (chunk 1: 4/4/4), incl. "km / h" → ' h' low on all three, which
+disagree with each other (KLD 2-9). → confident-wrong at "km / h" is not FA-specific on this setup; 5090/27B chunk-3 burst not tested.
+Data: evidence pack. **next:** owner decides; the deciding run is 27B FA-off (or CPU) at chunk 3 on the 5090 (needs a Swift window).
 Division of work: Claude prepares branches rebased on master, regression tests, repro programs, benchmarks/data tables and a
 per-change review guide; the OWNER reads/understands the code, writes every post in his own words, and submits.
 Chain (one open PR at a time):
