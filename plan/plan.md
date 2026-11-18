@@ -441,6 +441,16 @@ sm_86: C and D bit-identical (#32407 no effect here). FA-on vs FA-off: mean KLD 
 confident-wrong positions are the same with FA off, FA on and CPU (chunk 1: 4/4/4), incl. "km / h" → ' h' low on all three, which
 disagree with each other (KLD 2-9). → confident-wrong at "km / h" is not FA-specific on this setup; 5090/27B chunk-3 burst not tested.
 Data: evidence pack. **next:** owner decides; the deciding run is 27B FA-off (or CPU) at chunk 3 on the 5090 (needs a Swift window).
+11-18 PRODUCTION-SHAPED HARNESS built, window PREPARED NOT RUN (no GPU/Swift touched). Corpus scratch hx/corpus: real rendered Swift
+prompts (match GGUF template), first n_ctx tokens each, tokenized with specials (im_start = real token 248045), roles per token.
+c32k 4×32768 (prompts 35-65k tok): scored assistant 20.4 %, tool_response 68.1 %; c64k 4×65536 (prompts 75-105k): assistant 65.3 %.
+Tool patch hx/kld-v2.patch (C rebuilt, libggml-cuda md5 same; old build = prod libs md5-equal + rebuilt tool impl): pre-tokenized input,
+streaming (bit-identical vs non-stream on CPU), exact true-token lp sidecar (true PPL(base)), dump cols clamp/lpbt/role. CPU checks
+(Qwen3.5-0.8B): 338 control tokens = 171 im_start + 167 im_end; dump = log (mean KLD, max, top-1, PPL); sidecar PPL = writer PPL.
+Clamp share: Swift ref on old corpus 14.3 % (chunk 1 29 %, not 30 % overall); 0.8B on new corpus 0.13 %, but 0.8B on old corpus also
+0.02 % → the old-corpus clamp is 27B-specific; Swift's share on the new corpus is first measured by R1. Window hx/bin/window5.sh GO:
+R1 old ref 32k → R2 C vs R1 (#32407) → R3 old -ub 256 vs R1 (noise floor) → R4/R5 64k 2 chunks if ≥7 min left; est. Swift off ~19 min
+(13 min without R4/R5). **blocking decision:** owner approves the window. Analysis: hx/bin/post5.sh (split assistant vs tool/user).
 Division of work: Claude prepares branches rebased on master, regression tests, repro programs, benchmarks/data tables and a
 per-change review guide; the OWNER reads/understands the code, writes every post in his own words, and submits.
 Chain (one open PR at a time):
