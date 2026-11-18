@@ -414,6 +414,10 @@ Qwen3.8-27B Q8_0 + wikitext-2, 32k × 4 chunks, C (pristine ad9d9e8f5, verified 
 test-backend-ops FLASH_ATTN_EXT on the 5090: C and D 4432/4432, incl. extra hd256 GQA6 kv=32768 nb=512 f16/q8_0 cases (scratch only).
 → base model on public text shows only a small difference; no failing op test. Llama-3.1-8B dense rows not run (time). Data: evidence pack.
 **next:** owner decides whether this is enough for an issue; open: why Swift/agent corpus amplifies it (chunk-3 burst = position-specific?).
+11-17 18:23-18:28 per-position KLD dump window: Swift off ~5 min, restore verified (same build/cmd/env/config, keepWarm, 200), but
+the run was SKIPPED: the Swift pgrep guard matched the calling shell (fixed: pattern anchored to exe path). Tool patch + CPU-validated
+dump + analysis script ready (scratch rb/t407/w3, bin/ana5.py; libggml-cuda md5 unchanged). ❓ **blocking:** owner approves a 2nd
+window (~8-9 min: drain + ~3 min run on NVMe model copy + 3.5 min Swift load); KLD mode ignores --chunks, so all 4 chunks run.
 Division of work: Claude prepares branches rebased on master, regression tests, repro programs, benchmarks/data tables and a
 per-change review guide; the OWNER reads/understands the code, writes every post in his own words, and submits.
 Chain (one open PR at a time):
