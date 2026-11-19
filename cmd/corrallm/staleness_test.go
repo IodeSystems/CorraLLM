@@ -148,9 +148,18 @@ func TestModuleRootAboveFindsTheTreeAHandBuiltBinarySitsIn(t *testing.T) {
 // A released binary installed somewhere ordinary has no module above it, and
 // must stay silent — a warning naming a directory that does not exist on that
 // machine is worse than none.
+//
+// The sandbox uses /var/tmp because /tmp on agent boxes sits under a go.mod
+// (e.g. /tmp/go.mod from the Go toolchain cache), and leaking into it would
+// turn this test into a check of the machine it runs on. /var/tmp has no
+// go.mod ancestor on any known deployment.
 func TestModuleRootAboveIsEmptyOutsideAModule(t *testing.T) {
-	dir := t.TempDir()
-	exe := filepath.Join(dir, "corrallm")
+	sandbox := filepath.Join("/var/tmp", "module-root-test-"+t.Name())
+	if err := os.MkdirAll(sandbox, 0o755); err != nil {
+		t.Fatalf("cannot create sandbox under /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sandbox) })
+	exe := filepath.Join(sandbox, "corrallm")
 	if err := os.WriteFile(exe, []byte("#!/bin/true\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
