@@ -112,6 +112,10 @@ type costWriter struct {
 	// the upstream did not send one. nil or !ok adds nothing: an unmeasured
 	// count must not read as 0.
 	reasoning func(usage) (int, bool)
+	// anthropicUsage returns the full Anthropic usage object as JSON for the
+	// extra `anthropic_usage` field, or nil when the backend is not Anthropic
+	// or no usage was measured.
+	anthropicUsage func() []byte
 
 	decided bool
 	sse     bool // line mode, else window mode
@@ -288,6 +292,16 @@ func (c *costWriter) withCost(b []byte, u usage) []byte {
 	}
 	if _, ok := have["cost_source"]; !ok {
 		add = append(add, `"cost_source":"`+source+`"`)
+	}
+	// anthropic_usage carries the full Anthropic usage object so a meter that
+	// prices cache writes (5m/1h) and thinking tokens can read them without a
+	// second call. Nil for non-Anthropic backends.
+	if c.anthropicUsage != nil {
+		if au := c.anthropicUsage(); len(au) > 0 {
+			if _, ok := have["anthropic_usage"]; !ok {
+				add = append(add, `"anthropic_usage":`+string(au))
+			}
+		}
 	}
 	// nestAt/nest: an insertion into an existing completion_tokens_details.
 	nestAt, nest := -1, ""

@@ -401,8 +401,14 @@ func claudeReply(buf []byte, streaming bool) (au claudeUsage, model, stop string
 		if u.CacheCreationInputTokens > 0 {
 			au.CacheCreationInputTokens = u.CacheCreationInputTokens
 		}
+		if u.CacheCreation.Ephemeral5m > 0 {
+			au.CacheCreation.Ephemeral5m = u.CacheCreation.Ephemeral5m
+		}
 		if u.CacheCreation.Ephemeral1h > 0 {
 			au.CacheCreation.Ephemeral1h = u.CacheCreation.Ephemeral1h
+		}
+		if u.OutputTokensDetails.ThinkingTokens > 0 {
+			au.OutputTokensDetails.ThinkingTokens = u.OutputTokensDetails.ThinkingTokens
 		}
 		if u.OutputTokens > 0 {
 			au.OutputTokens = u.OutputTokens

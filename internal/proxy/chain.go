@@ -404,6 +404,13 @@ func candidateChain() ([]BodyStage, writerOrders) {
 					return 0, false
 				}
 				return c.sc.thinkingTokens(u)
+			}, anthropicUsage: func() []byte {
+				// aw.finish() runs before cw.finish(), so the usage is
+				// already parsed by the time withCost reads it.
+				if c.aw == nil {
+					return nil
+				}
+				return c.aw.claudeUsageJSON()
 			}}
 			return c.cw
 		}}

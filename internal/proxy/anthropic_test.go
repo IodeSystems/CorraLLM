@@ -331,3 +331,152 @@ func TestAnthropicProxyUntranslatableIs400(t *testing.T) {
 		t.Errorf("row = %d %q", row.Status, row.Error)
 	}
 }
+
+// TestAnthropicUsageFieldNonStreaming: the caller's usage carries the full
+// Anthropic usage in an anthropic_usage field, so a meter that prices cache
+// writes (5m/1h) and thinking tokens can read them from the OpenAI response.
+func TestAnthropicUsageFieldNonStreaming(t *testing.T) {
+	f := newFakeAnthropic(t)
+	r, _ := anthropicRig(t, f)
+	rec := postAnthropicChat(r, fmt.Sprintf(anthropicChatBody, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var resp struct {
+		Usage struct {
+			AnthropicUsage *struct {
+				InputTokens              int `json:"input_tokens"`
+				OutputTokens             int `json:"output_tokens"`
+				CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+				CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+				CacheCreation            struct {
+					Ephemeral5m int `json:"ephemeral_5m_input_tokens"`
+					Ephemeral1h int `json:"ephemeral_1h_input_tokens"`
+				} `json:"cache_creation"`
+				OutputTokensDetails struct {
+					ThinkingTokens int `json:"thinking_tokens"`
+				} `json:"output_tokens_details"`
+			} `json:"anthropic_usage"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("reply is not JSON: %v: %s", err, rec.Body)
+	}
+	au := resp.Usage.AnthropicUsage
+	if au == nil {
+		t.Fatalf("anthropic_usage missing from usage: %s", rec.Body)
+	}
+	// The fake Anthropic returns input_tokens=10, cache_creation_input_tokens=20,
+	// cache_read_input_tokens=3000, output_tokens=5.
+	if au.InputTokens != 10 {
+		t.Errorf("input_tokens = %d, want 10", au.InputTokens)
+	}
+	if au.CacheCreationInputTokens != 20 {
+		t.Errorf("cache_creation_input_tokens = %d, want 20", au.CacheCreationInputTokens)
+	}
+	if au.CacheReadInputTokens != 3000 {
+		t.Errorf("cache_read_input_tokens = %d, want 3000", au.CacheReadInputTokens)
+	}
+	if au.OutputTokens != 5 {
+		t.Errorf("output_tokens = %d, want 5", au.OutputTokens)
+	}
+	// Zero-value fields are present in the struct but must be 0 (no thinking,
+	// no 5m/1h cache creation in the fake).
+	if au.CacheCreation.Ephemeral5m != 0 || au.CacheCreation.Ephemeral1h != 0 {
+		t.Errorf("cache_creation = %+v, want zeros", au.CacheCreation)
+	}
+	if au.OutputTokensDetails.ThinkingTokens != 0 {
+		t.Errorf("thinking_tokens = %d, want 0", au.OutputTokensDetails.ThinkingTokens)
+	}
+}
+
+// TestAnthropicUsageFieldStreaming: the usage chunk of an SSE stream carries
+// anthropic_usage with the merged message_start + message_delta values.
+func TestAnthropicUsageFieldStreaming(t *testing.T) {
+	f := newFakeAnthropic(t)
+	r, _ := anthropicRig(t, f)
+	rec := postAnthropicChat(r, fmt.Sprintf(anthropicChatBody, `,"stream":true`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	// Find the SSE data line that carries usage.
+	var au *struct {
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+		CacheCreation            struct {
+			Ephemeral5m int `json:"ephemeral_5m_input_tokens"`
+			Ephemeral1h int `json:"ephemeral_1h_input_tokens"`
+		} `json:"cache_creation"`
+		OutputTokensDetails struct {
+			ThinkingTokens int `json:"thinking_tokens"`
+		} `json:"output_tokens_details"`
+	}
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		if !strings.Contains(line, `"usage"`) {
+			continue
+		}
+		data, ok := strings.CutPrefix(strings.TrimSpace(line), "data:")
+		if !ok {
+			continue
+		}
+		var chunk struct {
+			Usage struct {
+				AnthropicUsage *struct {
+					InputTokens              int `json:"input_tokens"`
+					OutputTokens             int `json:"output_tokens"`
+					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+					CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+					CacheCreation            struct {
+						Ephemeral5m int `json:"ephemeral_5m_input_tokens"`
+						Ephemeral1h int `json:"ephemeral_1h_input_tokens"`
+					} `json:"cache_creation"`
+					OutputTokensDetails struct {
+						ThinkingTokens int `json:"thinking_tokens"`
+					} `json:"output_tokens_details"`
+				} `json:"anthropic_usage"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal([]byte(data), &chunk) != nil {
+			continue
+		}
+		if chunk.Usage.AnthropicUsage != nil {
+			au = chunk.Usage.AnthropicUsage
+		}
+	}
+	if au == nil {
+		t.Fatalf("anthropic_usage missing from stream usage: %s", rec.Body)
+	}
+	// message_start: input=12, cache_creation=100, cache_read=5000, output=1
+	// message_delta: output=57
+	// Merged: input=12, cache_creation=100, cache_read=5000, output=57
+	if au.InputTokens != 12 {
+		t.Errorf("input_tokens = %d, want 12", au.InputTokens)
+	}
+	if au.CacheCreationInputTokens != 100 {
+		t.Errorf("cache_creation_input_tokens = %d, want 100", au.CacheCreationInputTokens)
+	}
+	if au.CacheReadInputTokens != 5000 {
+		t.Errorf("cache_read_input_tokens = %d, want 5000", au.CacheReadInputTokens)
+	}
+	if au.OutputTokens != 57 {
+		t.Errorf("output_tokens = %d, want 57", au.OutputTokens)
+	}
+}
+
+// TestAnthropicUsageFieldAbsentOnLocalBackend: a local (non-Anthropic)
+// backend's usage has no anthropic_usage field.
+func TestAnthropicUsageFieldAbsentOnLocalBackend(t *testing.T) {
+	rec, _ := costCase(t, nil, `{"model":"mock"}`, "application/json", 200,
+		`{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`)
+	var r struct {
+		Usage map[string]any `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &r); err != nil {
+		t.Fatalf("body not JSON: %v: %s", err, rec.Body.String())
+	}
+	if _, ok := r.Usage["anthropic_usage"]; ok {
+		t.Errorf("anthropic_usage present on a local backend: %s", rec.Body.String())
+	}
+}
