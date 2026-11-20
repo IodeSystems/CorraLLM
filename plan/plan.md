@@ -471,6 +471,16 @@ R1 old ref 32k → R2 C vs R1 (#32407) → R3 old -ub 256 vs R1 (noise floor) �
 tool_response tokens (true PPL 530-2076, clamp 15-22 %): R2 0.46 vs R3 noise floor 0.39 → any reduction-order change flips them. True
 PPL 32k: ref 102.76, R2 104.27, R3 104.20. → no upstream report; a master-based fork may keep #32407. Old mixed-corpus KLD gates
 were dominated by tool-output noise; future gates use hx corpus, assistant-token split. Ref .kld files in hx/kld (~65 GB) deletable.
+✅ 11-20 CANARY VERDICT: KEEP ad9d9e8f (20261117-180259) — no rollback trigger fired. Swift on it since 11-18 10:26 (pid 2186240, then
+2055981). Final 2 h report was never written; numbers from DB + msnap, new 11-18 10:30..11-20 03:41 (41 h) vs old 11-17 10:30..11-18 10:25
+(24 h, 99 5xx all before P84 06:47). Agg tok/s @2 busy 84.8 vs 83.5; @3+ 114.0 vs 106.3 (+7 %); decode p50/p90 80.1/126.5 vs 68.7/102.8;
+TTFT p50/p90 4.9/23.0 s vs 6.7/26.1 s; cache hit 77.9 vs 77.7 %; MTP acceptance 65.1 vs 65.9 % (-0.8 pt; post-P84 66.5); 5xx 0 (+1
+502 at the OOM kill below) vs 0 post-P84; turns/h at busy-3 576 vs 566 (same-24 h new window 11-18 10:30..11-19 10:30). Confounds: mix
+(life-raglit 749 vs 1478 reqs, aw4 5178 vs 4711), so decode tok/s partly mix; P84 (11-18 06:47) in old tail only. Restarts: (1) 11-18 10:26
+planned reload for this deploy; (2) 11-20 03:41:10 systemd-oomd killed user@1000 init.scope (memory pressure 72 % > 50 %) → whole user
+manager, corrallm and Swift down; user manager came back 06:52:00 (a sudo at 06:51:56), Swift pid 2055981 up 06:52:14. Swift was down
+03:41-06:52 (3 h 11 min) — not a build fault; no CUDA error, no llama-server crash. Post-outage window 11-20 06:55..13:20: @3+ 104.9,
+decode p50 91.6, 0 5xx. **next:** owner decides on keepWarm/oomd tuning for the 03:41 kill (not build related). Scripts: scratchpad canary/x.py.
 Division of work: Claude prepares branches rebased on master, regression tests, repro programs, benchmarks/data tables and a
 per-change review guide; the OWNER reads/understands the code, writes every post in his own words, and submits.
 Chain (one open PR at a time):
