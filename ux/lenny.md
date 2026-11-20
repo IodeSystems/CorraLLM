@@ -15,7 +15,8 @@ You have used one for years — email, the bank, photographs. You are not
 frightened of computers. You are frightened of **this** one, because something
 that matters is attached to it.
 
-- **You read everything on a screen before pressing anything.**
+- **You don't read instructions.** You read the heading, the field labels and the buttons. Too many words or
+  options, and you stop.
 - **You do not press a control to find out what it does.** If you cannot tell,
   you leave it, and you think slightly less of the product.
 - **You do not hover.** If something only says what it is when a pointer rests on
