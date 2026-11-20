@@ -1238,6 +1238,21 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 	// that frees a slot in 2s is a better answer than a cold one 30s from
 	// resident. Only if EVERY candidate is permanently unusable do we 503.
 	var bestBP *sched.BackpressureError
+	// SSE keep-alive (ssekeepalive.go): a stream still waiting after
+	// scheduler.streamCommitAfter commits to 200 and gets SSE comments; a
+	// failure after that is one SSE error event. From here, not earlier:
+	// every refusal above is fast and keeps its status code.
+	if after, every := p.config().Scheduler.StreamKeepAlive(); after > 0 {
+		servedOne := ""
+		if len(walk) == 1 {
+			servedOne = cands[walk[0]].Name
+		}
+		if ka, kr := newSSEKeepAlive(w, r, streaming, after, every, servedOne); ka != nil {
+			w, r = ka, kr
+			defer ka.finish()
+		}
+	}
+	ka := keepAliveFrom(r)
 	// lastHardFail is what the most recent backend SAID when it refused, kept so
 	// the row a person reads can carry it.
 	//
@@ -1270,6 +1285,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 		stage := group.StageFor(backend.Type)
 		lastCand := wi == len(walk)-1
 
+		ka.setPhase(phaseQueued)
 		admitStart := time.Now()
 		// group.Interruptible OR the request's own opt-in. A caller can only
 		// widen this, never narrow it — see retryableRequest.
@@ -1339,6 +1355,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 
 		// Proxy under reqCtx so a later preemption (cause ErrPreempted) aborts the
 		// upstream stream and frees this slot.
+		ka.setPhase(phaseLoading)
 		loadStart := time.Now()
 		pr, done, loaded, err := p.mgr.EnsureReady(proc.WithRequester(reqCtx, key), name, backend, cand.Sticky, cand.Credential)
 		if errors.Is(err, proc.ErrDraining) {
@@ -1593,6 +1610,7 @@ func (p *Proxy) handleInference(w http.ResponseWriter, r *http.Request) {
 			u.Path, u.RawPath = "/v1/chat/completions", ""
 			upReq.URL = &u
 		}
+		ka.setPhase(phaseUpstream)
 		aborted := serveCatchingAbort(rp, dst, upReq)
 		releaseSlot() // the backend is done with the slot: stream ended, error, or cancel
 		// THE SECOND UPSTREAM CALL (P35 §12.9(e) RULE 2, sttdiarize.go): the
@@ -3669,6 +3687,8 @@ func (p *Proxy) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"headers":     []string{"Retry-After", "X-RateLimit-Capacity", "X-RateLimit-InFlight", "X-RateLimit-Waiting"},
 		},
 		"errors": errorContract,
+		// The long-wait contract for stream:true (ssekeepalive.go).
+		"stream_keepalive": streamKeepAliveContract(p.config().Scheduler),
 		// What corrallm adds to every inference reply (chat, completions,
 		// /v1/messages, embeddings, rerank, audio, images), streamed or not.
 		"response_headers": map[string]any{
@@ -3792,6 +3812,12 @@ func (p *Proxy) logReq(r *http.Request, a store.Activity) int64 {
 	}
 	if c, ok := r.Context().Value(conversationCtxKey{}).(conversation); ok {
 		a.Conversation, a.ConversationMessages = c.id, c.messages
+	}
+	if n := keepAliveFrom(r).noteFor(a.Status); n != "" {
+		if a.Note != "" {
+			a.Note += "; "
+		}
+		a.Note += n
 	}
 	return p.log(a)
 }

@@ -461,6 +461,42 @@ type SchedulerConfig struct {
 	// makes the bench kill healthy queued requests.
 	MaxWait       string `yaml:"maxWait,omitempty"`       // e.g. "15s": queue wait before a 429
 	MaxQueueDepth int    `yaml:"maxQueueDepth,omitempty"` // reject once this many already wait on a backend
+
+	// StreamCommitAfter is how long a stream:true chat/completions request may
+	// wait (queue or cold load) before corrallm commits to 200 with SSE
+	// headers and starts sending keep-alive comments. Box-wide only; read
+	// from the top-level scheduler block. Empty = DefaultStreamCommitAfter;
+	// "off" or "0" disables the keep-alive. A refusal before this point keeps
+	// its normal status code; after it, a failure is one SSE error event.
+	StreamCommitAfter string `yaml:"streamCommitAfter,omitempty"`
+	// StreamKeepAliveEvery is the interval between SSE comments after the
+	// commit. Empty = DefaultStreamKeepAliveEvery.
+	StreamKeepAliveEvery string `yaml:"streamKeepAliveEvery,omitempty"`
+}
+
+// Defaults for the streaming keep-alive (owner design, 2026-11-20).
+const (
+	DefaultStreamCommitAfter    = 30 * time.Second
+	DefaultStreamKeepAliveEvery = 30 * time.Second
+)
+
+// StreamKeepAlive resolves the keep-alive threshold and interval. A zero
+// threshold means the keep-alive is off.
+func (s SchedulerConfig) StreamKeepAlive() (after, every time.Duration) {
+	after, every = DefaultStreamCommitAfter, DefaultStreamKeepAliveEvery
+	switch v := strings.TrimSpace(s.StreamCommitAfter); v {
+	case "":
+	case "off", "0":
+		after = 0
+	default:
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			after = d
+		}
+	}
+	if d, err := time.ParseDuration(strings.TrimSpace(s.StreamKeepAliveEvery)); err == nil && d > 0 {
+		every = d
+	}
+	return after, every
 }
 
 // ResidencyConfig is the box-wide policy for loaded backends.
