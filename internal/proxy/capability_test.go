@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -462,5 +463,238 @@ func TestRewrittenFundsRefusalTeachesNothing(t *testing.T) {
 	}
 	if facts := factsOf(t, st); len(facts) != 0 {
 		t.Errorf("learned from corrallm's own body: %+v", facts)
+	}
+}
+
+// probeSSEUpstream answers like the agentkit probeServer: SSE for every
+// request, a 400 with the GLM thinking-only body for reasoning_effort "none",
+// and tool_calls for the echo case.
+type probeSSEUpstream struct {
+	srv *httptest.Server
+}
+
+func newProbeSSEUpstream(t *testing.T) *probeSSEUpstream {
+	u := &probeSSEUpstream{}
+	u.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var b map[string]any
+		_ = json.Unmarshal(raw, &b)
+
+		sse := func(delta map[string]any, finish string) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			db, _ := json.Marshal(delta)
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":%s,\"finish_reason\":null}]}\n\n", db)
+			fb, _ := json.Marshal(finish)
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":%s}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":10,\"total_tokens\":13}}\n\n", fb)
+			fmt.Fprintf(w, "data: [DONE]\n\n")
+		}
+
+		eff, _ := b["reasoning_effort"].(string)
+		if eff != "" {
+			if eff == "none" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, glmThinkingOnly)
+				return
+			}
+			delta := map[string]any{"content": "ok"}
+			delta["reasoning_content"] = "r"
+			sse(delta, "stop")
+			return
+		}
+		if _, ok := b["grammar"]; ok {
+			sse(map[string]any{"content": "yes"}, "stop")
+			return
+		}
+		// Echo case: the prompt carries a payload after "decoded:\n".
+		msgs, _ := b["messages"].([]any)
+		content := ""
+		if len(msgs) > 0 {
+			m0, _ := msgs[0].(map[string]any)
+			content, _ = m0["content"].(string)
+		}
+		var payload string
+		if i := strings.Index(content, "decoded:\n"); i >= 0 {
+			_ = json.Unmarshal([]byte(content[i+len("decoded:\n"):]), &payload)
+		}
+		args, _ := json.Marshal(map[string]string{"text": payload})
+		sse(map[string]any{"tool_calls": []any{map[string]any{
+			"index": 0, "id": "c1", "type": "function",
+			"function": map[string]any{"name": "echo", "arguments": string(args)},
+		}}}, "tool_calls")
+	}))
+	t.Cleanup(u.srv.Close)
+	return u
+}
+
+// The probe endpoint stores probed facts and /v1/models shows them.
+func TestProbeCapabilityStoresFacts(t *testing.T) {
+	treatAsRemote(t)
+	up := newProbeSSEUpstream(t)
+	st := capStore(t)
+	h, p := capRig(t, st, map[string]config.Model{"glm": remoteModel(t, up.srv.URL)})
+
+	caps, err := p.ProbeCapability(context.Background(), "glm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(caps) == 0 {
+		t.Fatal("probe returned no capabilities")
+	}
+
+	// The probed facts are in the store with source "probed".
+	facts := factsOf(t, st)
+	if f := facts[llm.CapReasoningEffortsRefused]; f.Value != `"none"` || f.Source != "probed" {
+		t.Errorf("efforts.refused = %+v, want \"none\" probed", f)
+	}
+	if f := facts[llm.CapReasoningThinkingOnly]; f.Value != `"true"` || f.Source != "probed" {
+		t.Errorf("thinking_only = %+v, want \"true\" probed", f)
+	}
+	if f := facts[llm.CapReasoningOff]; f.Source != "probed" {
+		t.Errorf("reasoning.off = %+v, want probed", f)
+	}
+	if f := facts[llm.CapReasoningEffortsAccepted]; f.Source != "probed" || f.Value == "" {
+		t.Errorf("efforts.accepted = %+v, want probed with a value", f)
+	}
+
+	// /v1/models shows the capabilities with source "probed".
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	var models struct {
+		Data []map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &models); err != nil {
+		t.Fatal(err)
+	}
+	var glmCaps map[string]map[string]string
+	for _, m := range models.Data {
+		var id string
+		_ = json.Unmarshal(m["id"], &id)
+		if id != "glm" {
+			continue
+		}
+		_ = json.Unmarshal(m["capabilities"], &glmCaps)
+	}
+	if len(glmCaps) == 0 {
+		t.Fatal("glm has no capabilities in /v1/models")
+	}
+	if f := glmCaps[llm.CapReasoningEffortsRefused]; f == nil || f["source"] != "probed" {
+		t.Errorf("efforts.refused in /v1/models = %v, want source probed", f)
+	}
+	if f := glmCaps[llm.CapReasoningThinkingOnly]; f == nil || f["value"] != "true" {
+		t.Errorf("thinking_only in /v1/models = %v, want value true", f)
+	}
+}
+
+// The probe is manual-only: with no probe ever triggered, a remote model's
+// record holds only what traffic taught it, and no fact carries source
+// "probed" in /v1/models.
+func TestProbeIsManualOnly(t *testing.T) {
+	treatAsRemote(t)
+	up := newGLMUpstream(t)
+	st := capStore(t)
+	h, _ := capRig(t, st, map[string]config.Model{"glm": remoteModel(t, up.srv.URL)})
+
+	// Traffic teaches the record: a refusal and its 200. No probe is ever
+	// triggered.
+	if rec := postCapChat(h, `{"model":"glm","reasoning_effort":"none","messages":[{"role":"user","content":"hi"}]}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("first: %d", rec.Code)
+	}
+	if rec := postCapChat(h, `{"model":"glm","reasoning_effort":"none","messages":[{"role":"user","content":"hi"}]}`); rec.Code != http.StatusOK {
+		t.Fatalf("second: %d", rec.Code)
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	var models struct {
+		Data []map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &models); err != nil {
+		t.Fatal(err)
+	}
+	var glmCaps map[string]map[string]string
+	for _, m := range models.Data {
+		var id string
+		_ = json.Unmarshal(m["id"], &id)
+		if id == "glm" {
+			_ = json.Unmarshal(m["capabilities"], &glmCaps)
+		}
+	}
+	if len(glmCaps) == 0 {
+		t.Fatal("glm has no capabilities in /v1/models")
+	}
+	for key, f := range glmCaps {
+		if f["source"] == "probed" {
+			t.Errorf("%s has source \"probed\" without a probe trigger: %+v", key, f)
+		}
+	}
+	if f := glmCaps[llm.CapReasoningThinkingOnly]; f == nil || f["source"] != "refused" {
+		t.Errorf("thinking_only = %v, want the refusal fact", f)
+	}
+	if f := glmCaps[llm.CapReasoningEffortsAccepted]; f == nil || f["source"] != "observed" {
+		t.Errorf("efforts.accepted = %v, want the observed fact", f)
+	}
+	if f := glmCaps[llm.CapReasoningEffortsRefused]; f == nil || f["source"] != "refused" {
+		t.Errorf("efforts.refused = %v, want the refused fact", f)
+	}
+	// The refusal plus its 200 teach exactly these three; nothing more.
+	if len(glmCaps) != 3 {
+		t.Errorf("capabilities = %v, want only the three facts traffic taught", glmCaps)
+	}
+}
+
+// Two probes of the same model at once both succeed and leave one consistent
+// record: no partial write, no missing fact (run with -race).
+func TestTwoProbesDoNotRace(t *testing.T) {
+	treatAsRemote(t)
+	up := newProbeSSEUpstream(t)
+	st := capStore(t)
+	_, p := capRig(t, st, map[string]config.Model{"glm": remoteModel(t, up.srv.URL)})
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = p.ProbeCapability(context.Background(), "glm")
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("probe %d: %v", i, err)
+		}
+	}
+
+	// The probe walks the effort ladder and also probes grammar and tool
+	// fidelity: 4 reasoning facts + 4 capability facts for this rig.
+	const want = 8
+	facts := factsOf(t, st)
+	if len(facts) != want {
+		t.Fatalf("store has %d facts, want %d: %+v", len(facts), want, facts)
+	}
+	for key, f := range facts {
+		if f.Source != "probed" {
+			t.Errorf("%s source = %q, want probed", key, f.Source)
+		}
+	}
+	for _, key := range []string{llm.CapReasoningEffortsRefused, llm.CapReasoningThinkingOnly,
+		llm.CapReasoningOff, llm.CapReasoningEffortsAccepted} {
+		if f := facts[key]; f.Value == "" {
+			t.Errorf("%s is empty, want a value", key)
+		}
+	}
+}
+
+// A non-remote model is refused by the probe.
+func TestProbeCapabilityRefusesLocalModel(t *testing.T) {
+	st := capStore(t)
+	local := modelTo(t, "http://127.0.0.1:8080", "chat")
+	_, p := capRig(t, st, map[string]config.Model{"local": local})
+
+	_, err := p.ProbeCapability(context.Background(), "local")
+	if err == nil || !strings.Contains(err.Error(), "not a remote model") {
+		t.Fatalf("err = %v, want a refusal naming non-remote", err)
 	}
 }

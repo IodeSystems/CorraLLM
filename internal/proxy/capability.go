@@ -2,7 +2,9 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -131,8 +133,8 @@ func (p *Proxy) loadCapabilities() {
 	}
 }
 
-// capView is one fact in /v1/models. The evidence is left out.
-type capView struct {
+// CapView is one fact in /v1/models. The evidence is left out.
+type CapView struct {
 	Value  string    `json:"value"`
 	Source string    `json:"source"`
 	At     time.Time `json:"at"`
@@ -140,7 +142,7 @@ type capView struct {
 
 // capabilitiesOf is a model's `capabilities` in /v1/models; nil when it has
 // no record.
-func (p *Proxy) capabilitiesOf(name string, mc config.Model) map[string]capView {
+func (p *Proxy) capabilitiesOf(name string, mc config.Model) map[string]CapView {
 	if !isRemote(mc) {
 		return nil
 	}
@@ -156,11 +158,43 @@ func (p *Proxy) capabilitiesOf(name string, mc config.Model) map[string]capView 
 	if !ok {
 		return nil
 	}
-	out := make(map[string]capView, len(rec.Facts))
+	out := make(map[string]CapView, len(rec.Facts))
 	for key, f := range rec.Facts {
-		out[key] = capView{Value: f.Value, Source: string(f.Source), At: f.At.UTC().Truncate(time.Millisecond)}
+		out[key] = CapView{Value: f.Value, Source: string(f.Source), At: f.At.UTC().Truncate(time.Millisecond)}
 	}
 	return out
+}
+
+// ProbeCapability runs the manual reasoning-effect probe for a remote model.
+// It calls agentkit's llm.ProbeCapabilities on the model's record-only
+// client, which walks the effort ladder (none→xhigh), sends one small
+// request per effort, and records the facts through the client's OnLearn —
+// so corrallm's existing storeFact persistence applies unchanged. The
+// record is immediately visible in /v1/models.
+//
+// Remote models only: a local model has no upstream to refuse or measure.
+// Manual only: no schedule, no automatic trigger. The probe spends paid
+// tokens, so it runs only when an operator asks.
+func (p *Proxy) ProbeCapability(ctx context.Context, name string) (map[string]CapView, error) {
+	cands, ok := p.config().ResolveServed(name)
+	if !ok || len(cands) == 0 {
+		return nil, fmt.Errorf("model %q not found", name)
+	}
+	mc := cands[0].Model
+	tgt, err := mc.ProxyTarget()
+	if err != nil {
+		return nil, fmt.Errorf("model %q: %w", name, err)
+	}
+	k, ok := capKeyFor(name, mc, tgt)
+	if !ok {
+		return nil, fmt.Errorf("model %q is not a remote model: the probe needs an upstream to measure", name)
+	}
+	cl := p.capClient(k)
+	cl.SetReasoningDialect(llm.DialectOpenAI)
+	if _, err := llm.ProbeCapabilities(ctx, cl, llm.ProbeOpts{}); err != nil {
+		return nil, fmt.Errorf("probe of %q: %w", name, err)
+	}
+	return p.capabilitiesOf(name, mc), nil
 }
 
 // align translates the chat body by the backend's capability record. The

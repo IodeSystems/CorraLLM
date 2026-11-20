@@ -826,6 +826,14 @@ func BuildGateway(router chi.Router, h *Handlers) (*gat.Gateway, error) {
 	}, h.ProbeModel)
 
 	gat.Register(humaAPI, g, huma.Operation{
+		OperationID: "probeCapability",
+		Method:      http.MethodPost,
+		Path:        "/api/v1/config/models/{name}/probe-capability",
+		Summary:     "Run the manual reasoning-effect probe: walk the effort ladder, measure reasoning tokens, store the probed facts. Remote models only. Spends paid tokens.",
+		Tags:        []string{"config"},
+	}, h.ProbeCapability)
+
+	gat.Register(humaAPI, g, huma.Operation{
 		OperationID: "trialModel",
 		Method:      http.MethodPost,
 		Path:        "/api/v1/config/models/trial",

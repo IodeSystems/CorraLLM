@@ -3167,7 +3167,7 @@ func (p *Proxy) serveModels(w http.ResponseWriter, req *http.Request, only strin
 		*modelReasoning
 		// Capabilities: the capability record of a remote model (P73), keyed
 		// by agentkit's Cap* keys. Absent when there is none.
-		Capabilities map[string]capView `json:"capabilities,omitempty"`
+		Capabilities map[string]CapView `json:"capabilities,omitempty"`
 	}
 	// Data starts non-nil so an empty config serialises as [] rather than null.
 	// OpenAI clients iterate the list without a nil check, and a fresh install
