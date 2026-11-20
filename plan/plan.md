@@ -386,6 +386,19 @@ Status marks: ◻ todo · ◐ in progress · ✅ done · ⏸ parked · ❓ block
 Everything ✅ has moved to [`plan/done.md`](done.md) — this section is only what is
 still open. Items parked on hardware rather than on a decision are in §9.
 
+### ◐ P85 — SSE keep-alive for queued streaming requests — 2026-11-20
+Owner design 11-20. f9baff6 (`internal/proxy/ssekeepalive.go`): stream:true on /v1/chat/completions and
+/v1/completions, still waiting (queue or cold load) after `scheduler.streamCommitAfter` (default 30s, "off"
+disables) → 200 + SSE headers, then `: queued|loading|processing` every `scheduler.streamKeepAliveEvery`
+(default 30s) until the upstream writes. After the commit a 4xx/5xx is ONE event
+`data: {"error":{…status-path body…,"status","code","retry_after"}}` + `data: [DONE]`. Row keeps the real status,
+note `sse-keepalive: …`. Late corrallm headers (served for a lane, timing, slot) go out as `: x-corrallm-…` comments.
+In /v1/capabilities `stream_keepalive`. Not /v1/messages (Anthropic error shape differs).
+**next:** watch rows with note `sse-keepalive` under real queue load. **risks:** a caller that disconnects after
+the commit gets a status-500 event written to a dead conn (harmless); a client that treats any 200 as success
+must read the error event (agentkit StreamError reads retry_after — told agentkit-5c). **optional:** queue
+position in the comment (needs a sched API); the Anthropic-shaped event for /v1/messages.
+
 ### ◐ P84 — 503 EOF on Swift = stale keep-alive race — 2026-11-18
 Cause (measured): llama-server closes the socket right after a STREAMED reply with no `Connection: close`
 (raw-socket test on :5806 11-18: non-stream reply keeps the conn, stream reply → EOF in 0 ms). net/http
