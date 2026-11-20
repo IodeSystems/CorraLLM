@@ -746,6 +746,9 @@ func (p *Proxy) Mount(mux interface {
 	// /v1/keys: a configured key mints and manages child keys, each with a
 	// share of its allocation (childkeys.go).
 	mux.Handle("/v1/keys", http.HandlerFunc(p.handleKeys))
+	// /v1/keys/report: the per-child usage report, scoped to the caller
+	// (keyreport.go). Mounted before the /v1/keys/* wildcard so it wins.
+	mux.Handle("/v1/keys/report", http.HandlerFunc(p.handleKeyReport))
 	mux.Handle("/v1/keys/*", http.HandlerFunc(p.handleKeys))
 	mux.Handle("/v1/access-requests", http.HandlerFunc(p.handleAccessRequests))
 	mux.Handle("/v1/access-requests/*", http.HandlerFunc(p.handleAccessRequests))

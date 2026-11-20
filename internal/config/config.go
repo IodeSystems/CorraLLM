@@ -664,7 +664,7 @@ var BuiltinRoutes = []string{
 	"/v1/images/generations", "/v1/images/segmentations",
 	"/v1/realtime", "/v1/models", "/v1/messages/count_tokens", "/v1/messages",
 	"/v1/tokenize", "/v1/detokenize", "/v1/capabilities", "/v1/reservations",
-	"/v1/keys", "/v1/access-requests",
+	"/v1/keys", "/v1/keys/report", "/v1/access-requests",
 }
 
 // routesOverlap reports whether one path prefix equals, contains or sits
