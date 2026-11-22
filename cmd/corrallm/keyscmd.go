@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -255,6 +257,67 @@ func newKeysCmd() *cobra.Command {
 	}
 	sa.bind(setCmd, true)
 
+	var repSince, repUntil, repLast string
+	reportCmd := &cobra.Command{
+		Use:   "report",
+		Short: "Usage per key (you, then your subkeys), broken down by served model, over a window",
+		Long: "Reports the usage of your key and every subkey you minted, each as its own row broken\n" +
+			"down by served model: calls, errors, model time, queued time, tokens (prompt, cached,\n" +
+			"completion, reasoning), and cost.\n\n" +
+			"The window is --since/--until (RFC 3339) or --last 24h / 7d (resolved here, to now\n" +
+			"minus that long). Omit all three for the whole log. --last cannot mix with\n" +
+			"--since or --until.\n\n" +
+			"  --json passes the server's JSON through, for scripts and schedules.",
+		Args: cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			ch := c.Flags().Changed
+			if ch("last") && (ch("since") || ch("until")) {
+				return fmt.Errorf("--last cannot mix with --since or --until")
+			}
+			since, until := repSince, repUntil
+			if ch("last") {
+				d, err := parseDuration(repLast)
+				if err != nil {
+					return fmt.Errorf("--last %q: want a duration, e.g. 24h, 7d", repLast)
+				}
+				now := time.Now().UTC()
+				since = now.Add(-d).Format(time.RFC3339)
+				until = now.Format(time.RFC3339)
+			}
+			q := url.Values{}
+			if since != "" {
+				q.Set("since", since)
+			}
+			if until != "" {
+				q.Set("until", until)
+			}
+			path := "/v1/keys/report"
+			if enc := q.Encode(); enc != "" {
+				path += "?" + enc
+			}
+			raw, err := call(c, http.MethodGet, path, nil)
+			if err != nil {
+				return err
+			}
+			if cf.json {
+				// Byte-for-byte: a schedule reads these rows the way it reads the
+				// API, so do not re-encode them here.
+				_, _ = c.OutOrStdout().Write(raw)
+				return nil
+			}
+			var rep keyReportReply
+			if err := json.Unmarshal(raw, &rep); err != nil {
+				return err
+			}
+			printKeyReport(c.OutOrStdout(), rep)
+			return nil
+		},
+	}
+	repF := reportCmd.Flags()
+	repF.StringVar(&repSince, "since", "", "window start, RFC 3339")
+	repF.StringVar(&repUntil, "until", "", "window end, RFC 3339")
+	repF.StringVar(&repLast, "last", "", "window, this long from now: 24h, 7d")
+
 	toggle := func(use, short string, off bool) *cobra.Command {
 		return &cobra.Command{
 			Use:   use + " KEY",
@@ -287,7 +350,7 @@ func newKeysCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(listCmd, mintCmd, setCmd,
+	cmd.AddCommand(listCmd, mintCmd, setCmd, reportCmd,
 		toggle("disable", "Switch a subkey off, keeping it and its budgets", true),
 		toggle("enable", "Switch a subkey back on", false),
 		revokeCmd)
@@ -367,4 +430,98 @@ func onModel(m string) string {
 		return ""
 	}
 	return " on " + strings.TrimSpace(m)
+}
+
+// keyReportReply is /v1/keys/report as the CLI sees it. The field set is the
+// API's; --json passes the raw body through, so the shapes must not drift.
+type keyReportReply struct {
+	Window struct {
+		Since string `json:"since"`
+		Until string `json:"until"`
+	} `json:"window"`
+	Rows []struct {
+		Key    string `json:"key"`
+		Label  string `json:"label"`
+		Models []struct {
+			Served           string  `json:"served"`
+			Calls            int64   `json:"calls"`
+			Errors           int64   `json:"errors"`
+			DwellMS          int64   `json:"dwellMs"`
+			QueuedMS         int64   `json:"queuedMs"`
+			PromptTokens     int64   `json:"promptTokens"`
+			CachedTokens     int64   `json:"cachedTokens"`
+			CompletionTokens int64   `json:"completionTokens"`
+			ReasoningTokens  int64   `json:"reasoningTokens"`
+			CostUSD          float64 `json:"costUsd"`
+		} `json:"models"`
+	} `json:"rows"`
+}
+
+// printKeyReport renders the rows: your own key first, then your subkeys,
+// each with one line per served model. The order comes from the API.
+func printKeyReport(w io.Writer, rep keyReportReply) {
+	win := ""
+	switch {
+	case rep.Window.Since != "" && rep.Window.Until != "":
+		win = rep.Window.Since + " → " + rep.Window.Until
+	case rep.Window.Since != "":
+		win = "since " + rep.Window.Since
+	case rep.Window.Until != "":
+		win = "until " + rep.Window.Until
+	}
+	if win != "" {
+		fmt.Fprintf(w, "window: %s\n\n", win)
+	}
+	for i, r := range rep.Rows {
+		name := firstOf(r.Label, "(no label)")
+		if i == 0 {
+			fmt.Fprintf(w, "you  %s\n", r.Key)
+		} else {
+			fmt.Fprintf(w, "%s  %s\n", r.Key, name)
+		}
+		if len(r.Models) == 0 {
+			fmt.Fprintln(w, "  (no traffic in the window)")
+			continue
+		}
+		for _, m := range r.Models {
+			cacheHit := 0.0
+			if m.PromptTokens > 0 {
+				cacheHit = float64(m.CachedTokens) / float64(m.PromptTokens) * 100
+			}
+			fmt.Fprintf(w, "  %-20s %5d calls  %4d err  dwell %s  queued %s  ",
+				m.Served, m.Calls, m.Errors, durWords(m.DwellMS), durWords(m.QueuedMS))
+			fmt.Fprintf(w, "%s  cache %.0f%%  $%.4f\n",
+				tokensWords(m.PromptTokens, m.CachedTokens, m.CompletionTokens, m.ReasoningTokens),
+				cacheHit, m.CostUSD)
+		}
+	}
+}
+
+func durWords(ms int64) string {
+	d := time.Duration(ms) * time.Millisecond
+	return d.Round(time.Millisecond).String()
+}
+
+func tokensWords(prompt, cached, completion, reasoning int64) string {
+	s := "prompt " + strconv.FormatInt(prompt, 10) + " (cached " + strconv.FormatInt(cached, 10) + ")"
+	if completion > 0 {
+		s += "  completion " + strconv.FormatInt(completion, 10)
+	}
+	if reasoning > 0 {
+		s += "  reasoning " + strconv.FormatInt(reasoning, 10)
+	}
+	return s
+}
+
+// parseDuration is time.ParseDuration plus days: the help advertises "7d" and
+// the spec names it, but Go's duration grammar stops at hours. A trailing "d"
+// is N days; everything else is unchanged.
+func parseDuration(s string) (time.Duration, error) {
+	t := strings.TrimSpace(s)
+	if n, ok := strings.CutSuffix(t, "d"); ok {
+		if days, err := strconv.Atoi(n); err == nil {
+			return time.Duration(days) * 24 * time.Hour, nil
+		}
+	}
+	return time.ParseDuration(t)
 }
